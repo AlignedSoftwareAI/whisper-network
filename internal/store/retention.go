@@ -60,11 +60,16 @@ func (s *Store) JobsToDelete(ctx context.Context, cutoff time.Time) ([]string, e
 	return out, rows.Err()
 }
 
-// DeleteEndedLeases deletes leases that ended before cutoff and returns how many.
+// DeleteEndedLeases deletes leases that ended before cutoff and returns how
+// many. Leases of a task that is still pending or leased are kept whatever
+// their age: they record which workers failed it, which decides who may
+// take it next and how many attempts it has left (DESIGN.md §8.2).
 func (s *Store) DeleteEndedLeases(ctx context.Context, cutoff time.Time) (int64, error) {
 	var n int64
 	err := s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?`, toMS(cutoff))
+		res, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?
+			AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = leases.job_id AND t.seq = leases.seq
+				AND t.state IN ('pending','leased'))`, toMS(cutoff))
 		if err != nil {
 			return fmt.Errorf("delete ended leases: %w", err)
 		}

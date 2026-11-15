@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -10,12 +11,6 @@ import (
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/sched"
 )
-
-const grace = 10 * time.Minute
-
-func withGrace(g time.Duration) func(*Config) {
-	return func(c *Config) { c.RetryElsewhereGrace = g }
-}
 
 // failClaim claims with w (which must get a task) and fails it retryably.
 func (f *fixture) failClaim(w string) *Lease {
@@ -35,34 +30,40 @@ func (f *fixture) vtimes() *sched.State {
 	return st
 }
 
-// TestRetryElsewhereAfterFailure: the worker that failed a task does not get
-// it back while another worker could take it; the other worker does.
+// TestRetryElsewhereAfterFailure: the worker that failed a task never gets
+// it back, however long it waits; another worker does.
 func TestRetryElsewhereAfterFailure(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(grace))
+	f := newFixture(t)
 	a := f.worker(api.SandboxFull, f.pubID)
 	b := f.worker(api.SandboxFull, f.pubID)
 	j := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
 	f.failClaim(a)
 
 	assert.Nil(t, f.claim(a), "a failed this task")
-	f.clk.Advance(grace - time.Millisecond)
-	assert.Nil(t, f.claim(a), "still within the grace")
+	f.clk.Advance(30 * 24 * time.Hour)
+	assert.Nil(t, f.claim(a), "not even long after")
+	why, err := f.s.RetryExclusion(f.ctx, j.ID, 1, a)
+	require.NoError(t, err)
+	assert.Equal(t, "worker "+a+" failed this task", why)
+	why, err = f.s.RetryExclusion(f.ctx, j.ID, 1, b)
+	require.NoError(t, err)
+	assert.Empty(t, why)
+
 	l := f.claim(b)
 	require.NotNil(t, l)
 	assert.Equal(t, j.ID, l.JobID)
 	assert.Equal(t, 2, l.Attempt)
-	assert.False(t, l.SameWorkerRetry)
 }
 
 // TestRetryElsewhereExpiryCounts: an expired lease excludes its worker like
 // a failure does.
 func TestRetryElsewhereExpiryCounts(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(grace))
+	f := newFixture(t)
 	a := f.worker(api.SandboxFull, f.pubID)
 	b := f.worker(api.SandboxFull, f.pubID)
-	f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	j := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
 	require.NotNil(t, f.claim(a))
 	f.clk.Advance(ttl)
 	ends, err := f.s.ExpireLeases(f.ctx)
@@ -71,16 +72,17 @@ func TestRetryElsewhereExpiryCounts(t *testing.T) {
 	require.True(t, ends[0].Requeued)
 
 	assert.Nil(t, f.claim(a))
-	l := f.claim(b)
-	require.NotNil(t, l)
-	assert.False(t, l.SameWorkerRetry)
+	why, err := f.s.RetryExclusion(f.ctx, j.ID, 1, a)
+	require.NoError(t, err)
+	assert.Equal(t, "a lease on this task expired on worker "+a, why)
+	require.NotNil(t, f.claim(b))
 }
 
 // TestRetryElsewhereReleaseDoesNotExclude: a voluntary release is not a
 // failure; the same worker may take the task straight back.
 func TestRetryElsewhereReleaseDoesNotExclude(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(grace))
+	f := newFixture(t)
 	a := f.worker(api.SandboxFull, f.pubID)
 	f.worker(api.SandboxFull, f.pubID) // an idle peer changes nothing
 	f.job(f.pubID, "c", api.WeightMedium, 1, 10)
@@ -91,49 +93,182 @@ func TestRetryElsewhereReleaseDoesNotExclude(t *testing.T) {
 	again := f.claim(a)
 	require.NotNil(t, again)
 	assert.Equal(t, l.JobID, again.JobID)
-	assert.False(t, again.SameWorkerRetry)
+	assert.Equal(t, 1, again.Attempt)
 }
 
-// TestRetryElsewhereOnlyWorkerAfterGrace: when no other worker takes the
-// retry, the worker that failed the task gets it once the grace has passed,
-// and the lease says it is a same-worker retry.
-func TestRetryElsewhereOnlyWorkerAfterGrace(t *testing.T) {
+// TestAttemptsCountDistinctWorkers: with MaxAttempts 3 the task survives
+// failures on two workers, fails on the third, and the job error names all
+// three once each.
+func TestAttemptsCountDistinctWorkers(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(grace))
-	a := f.worker(api.SandboxFull, f.pubID)
+	f := newFixture(t, func(c *Config) { c.MaxAttempts = 3 })
+	ws := []string{f.worker(api.SandboxFull, f.pubID), f.worker(api.SandboxFull, f.pubID),
+		f.worker(api.SandboxFull, f.pubID)}
 	j := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
-	f.failClaim(a)
+	for i, w := range ws[:2] {
+		l := f.failClaim(w)
+		assert.Equal(t, i+1, l.Attempt)
+	}
+	l := f.claim(ws[2])
+	require.NotNil(t, l)
+	assert.Equal(t, 3, l.Attempt)
+	end, err := f.s.Fail(f.ctx, l.ID, ws[2], "out of memory", true)
+	require.NoError(t, err)
+	assert.True(t, end.JobFailed)
+	assert.Equal(t, 3, end.Attempt)
+	got, err := f.s.Job(f.ctx, j.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "transcribe task 1 failed after 3 attempt(s) (on workers "+strings.Join(ws, ", ")+
+		"): out of memory", got.Error)
+}
 
-	f.clk.Advance(grace - time.Millisecond)
-	assert.Nil(t, f.claim(a))
-	f.clk.Advance(time.Millisecond)
+// TestExpiryAndFailureOnOneWorkerCountOnce: a worker that both let a lease
+// expire and failed the task (possible with leases from before strict
+// exclusion) is one attempt, and the job error names it once.
+func TestExpiryAndFailureOnOneWorkerCountOnce(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	a := f.worker(api.SandboxFull, f.pubID)
+	b := f.worker(api.SandboxFull, f.pubID)
+	j := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
 	l := f.claim(a)
-	require.NotNil(t, l, "the grace has passed")
-	assert.Equal(t, j.ID, l.JobID)
-	assert.Equal(t, 2, l.Attempt)
-	assert.True(t, l.SameWorkerRetry)
+	require.NotNil(t, l)
+	f.clk.Advance(ttl)
+	ends, err := f.s.ExpireLeases(f.ctx)
+	require.NoError(t, err)
+	require.Len(t, ends, 1)
+	assert.Equal(t, 1, ends[0].Attempt)
 
-	end, err := f.s.Fail(f.ctx, l.ID, a, "broken again", true)
+	// Record a second, failed lease of a on the task, as an older server
+	// could have; the strict claim no longer hands it out.
+	_, err = f.s.w.ExecContext(f.ctx, `INSERT INTO leases (id, job_id, seq, worker_id, created_at, expires_at,
+		ended_at, outcome) VALUES ('old', ?, 1, ?, ?, ?, ?, 'failed')`, j.ID, a,
+		toMS(f.clk.Now()), toMS(f.clk.Now()), toMS(f.clk.Now()))
+	require.NoError(t, err)
+
+	l = f.claim(b)
+	require.NotNil(t, l, "a counts once, so b may still try")
+	assert.Equal(t, 2, l.Attempt)
+	end, err := f.s.Fail(f.ctx, l.ID, b, "broken", true)
 	require.NoError(t, err)
 	require.True(t, end.JobFailed)
 	got, err := f.s.Job(f.ctx, j.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+a+", "+a+"): broken again", got.Error)
+	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+a+", "+b+"): broken", got.Error)
 }
 
-// TestRetryElsewhereGraceZeroDisables: with no grace the failing worker may
-// retry at once.
-func TestRetryElsewhereGraceZeroDisables(t *testing.T) {
+// TestNonRetryableFailsAtOnce: a failure the worker attributes to the input
+// fails the job straight away, though other workers could retry.
+func TestNonRetryableFailsAtOnce(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(0))
+	f := newFixture(t, func(c *Config) { c.MaxAttempts = 5 })
 	a := f.worker(api.SandboxFull, f.pubID)
 	f.worker(api.SandboxFull, f.pubID)
-	f.job(f.pubID, "c", api.WeightMedium, 1, 10)
-	f.failClaim(a)
-
+	j := f.prepJob(f.pubID, "c")
 	l := f.claim(a)
 	require.NotNil(t, l)
-	assert.True(t, l.SameWorkerRetry, "still reported, so the log shows the repeat")
+	end, err := f.s.Fail(f.ctx, l.ID, a, "invalid data found when processing input", false)
+	require.NoError(t, err)
+	assert.True(t, end.JobFailed)
+	got, err := f.s.Job(f.ctx, j.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.JobFailed, got.State)
+	assert.Equal(t, "prepare task 0 failed after 1 attempt(s) (on worker "+a+
+		"): invalid data found when processing input", got.Error)
+}
+
+// TestFailStranded: a task that failed on its only eligible worker waits
+// for another one, and fails its job once it has waited the limit, naming
+// the worker. Until then nothing happens to it.
+func TestFailStranded(t *testing.T) {
+	t.Parallel()
+	const limit = 24 * time.Hour
+	f := newFixture(t)
+	a := f.worker(api.SandboxFull, f.pubID)
+	j := f.job(f.pubID, "c", api.WeightMedium, 2, 10)
+	other := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	l := f.claim(a)
+	require.NotNil(t, l)
+	_, err := f.s.Fail(f.ctx, l.ID, a, "model file corrupt", true)
+	require.NoError(t, err)
+	require.NotNil(t, f.claim(a), "a gets the job's other task")
+
+	f.clk.Advance(limit - time.Millisecond)
+	st, err := f.s.FailStranded(f.ctx, limit)
+	require.NoError(t, err)
+	assert.Empty(t, st, "not waited long enough")
+
+	f.clk.Advance(time.Millisecond)
+	st, err = f.s.FailStranded(f.ctx, limit)
+	require.NoError(t, err)
+	require.Len(t, st, 1)
+	assert.Equal(t, j.ID, st[0].JobID)
+	assert.Equal(t, []string{a}, st[0].Workers)
+	want := "transcribe task 1 failed after 1 attempt(s) (on worker " + a +
+		"); no other eligible worker took it within 24h: model file corrupt"
+	assert.Equal(t, want, st[0].Reason)
+	got, err := f.s.Job(f.ctx, j.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.JobFailed, got.State)
+	assert.Equal(t, want, got.Error)
+
+	got, err = f.s.Job(f.ctx, other.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, api.JobFailed, got.State, "a job that never failed waits as long as it needs")
+	st, err = f.s.FailStranded(f.ctx, limit)
+	require.NoError(t, err)
+	assert.Empty(t, st)
+}
+
+// TestFailStrandedWaitRestartsOnRelease: a worker that takes the task and
+// releases it shows the task can still be taken; the wait counts from the
+// release.
+func TestFailStrandedWaitRestartsOnRelease(t *testing.T) {
+	t.Parallel()
+	const limit = time.Hour
+	f := newFixture(t)
+	a := f.worker(api.SandboxFull, f.pubID)
+	b := f.worker(api.SandboxFull, f.pubID)
+	j := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	f.failClaim(a)
+	f.clk.Advance(limit / 2)
+	l := f.claim(b)
+	require.NotNil(t, l)
+	_, err := f.s.Release(f.ctx, l.ID, b)
+	require.NoError(t, err)
+
+	f.clk.Advance(limit / 2)
+	st, err := f.s.FailStranded(f.ctx, limit)
+	require.NoError(t, err)
+	assert.Empty(t, st, "b took it half an hour ago")
+	f.clk.Advance(limit / 2)
+	st, err = f.s.FailStranded(f.ctx, limit)
+	require.NoError(t, err)
+	require.Len(t, st, 1)
+	assert.Equal(t, j.ID, st[0].JobID)
+	assert.Equal(t, []string{a}, st[0].Workers, "a release is not a failure")
+}
+
+// TestEndedLeasesOfLiveTasksKept: lease retention does not delete the
+// failures of a task that is still pending, which would let its worker
+// have it back and refund its attempts.
+func TestEndedLeasesOfLiveTasksKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	a := f.worker(api.SandboxFull, f.pubID)
+	f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	done := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	f.failClaim(a)
+	l := f.claim(a)
+	require.NotNil(t, l)
+	require.Equal(t, done.ID, l.JobID)
+	f.complete(l)
+
+	f.clk.Advance(time.Hour)
+	n, err := f.s.DeleteEndedLeases(f.ctx, f.clk.Now())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the finished task's lease")
+	assert.Nil(t, f.claim(a), "still excluded")
 }
 
 // TestRetryElsewhereFairness: a (queue, class) whose only pending task is
@@ -142,7 +277,7 @@ func TestRetryElsewhereGraceZeroDisables(t *testing.T) {
 // charged for it.
 func TestRetryElsewhereFairness(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(grace))
+	f := newFixture(t)
 	other := f.queue("other", 100)
 	a := f.worker(api.SandboxFull, f.pubID, other)
 	b := f.worker(api.SandboxFull, f.pubID, other)
@@ -185,7 +320,7 @@ func TestRetryElsewhereFairness(t *testing.T) {
 // attempt.
 func TestFailedJobNamesWorkers(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, withGrace(grace))
+	f := newFixture(t)
 	a := f.worker(api.SandboxFull, f.pubID)
 	b := f.worker(api.SandboxFull, f.pubID)
 	j := f.job(f.pubID, "c", api.WeightMedium, 1, 10)

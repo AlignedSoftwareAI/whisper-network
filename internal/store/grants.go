@@ -72,7 +72,7 @@ func (t *Tx) RemoveGrant(ctx context.Context, principal string, role api.Role, s
 	now := t.s.now()
 	var cancelled []string
 	for _, l := range ls {
-		end, err := t.s.endLease(ctx, t.tx, l, api.OutcomeCancelled, false, true, "process grant revoked", now)
+		end, err := t.s.endLease(ctx, t.tx, l, api.OutcomeCancelled, true, "process grant revoked", now)
 		if err != nil {
 			return nil, err
 		}

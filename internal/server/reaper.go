@@ -16,6 +16,7 @@ import (
 )
 
 // reapOnce runs one reaper pass (DESIGN.md §8.3, §8.5): expire leases,
+// fail tasks no other eligible worker took within the retry wait limit,
 // finish jobs whose assembly was interrupted, purge media and jobs past
 // retention, and delete stale leases, pending workers and sessions. Each
 // step logs its own failure and the pass continues; the next tick retries.
@@ -38,6 +39,17 @@ func (s *Server) reapOnce(ctx context.Context) {
 		s.leaseEnded(ctx, e)
 	}
 	counts["leases_expired"] = len(ends)
+
+	stranded, err := s.st.FailStranded(ctx, s.cfg.RetryWaitLimit)
+	fail("fail stranded tasks", err)
+	for i := range stranded {
+		st := &stranded[i]
+		obs.Warn(&s.log, obs.EventTaskFailed).Str(obs.FieldJobID, st.JobID).Int(obs.FieldTaskSeq, st.Seq).
+			Str(obs.FieldTaskKind, string(st.Kind)).Strs("failed_on", st.Workers).Bool("retryable", false).
+			Str(obs.FieldError, st.Reason).Msg("task failed: no other eligible worker took it")
+		s.jobFinished(ctx, st.JobID)
+	}
+	counts["tasks_stranded"] = len(stranded)
 
 	ids, err := s.st.JobsAwaitingAssembly(ctx)
 	fail("jobs awaiting assembly", err)

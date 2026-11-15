@@ -46,6 +46,7 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	assert.Equal(t, int64(64<<10), cfg.MinTransferRate)
 	assert.Equal(t, int64(512<<20), cfg.PasswordMemoryBudget)
 	assert.Equal(t, 720*time.Hour, cfg.RejectedWorkerRetention)
+	assert.Equal(t, 24*time.Hour, cfg.RetryWaitLimit)
 	assert.Equal(t, 3, cfg.MaxPendingPerSource)
 	assert.Equal(t, 2, cfg.UploadsPerPrincipal)
 	assert.Equal(t, 1, cfg.AnalysesPerPrincipal)
@@ -53,7 +54,6 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	assert.InDelta(t, 4.0, cfg.LeaseAgeFactor, 0)
 	scfg, err := c.storeConfig()
 	require.NoError(t, err)
-	assert.Equal(t, 10*time.Minute, scfg.RetryElsewhereGrace, "retry elsewhere is on by default")
 	assert.Equal(t, 2, scfg.MaxAttempts)
 	w, mf, err := c.storeTuning()
 	require.NoError(t, err)
@@ -64,10 +64,12 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 func TestServerCmdEnv(t *testing.T) {
 	t.Setenv("WHISPER_LISTEN", "127.0.0.1:1234")
 	t.Setenv("WHISPER_MAX_ATTEMPTS", "5")
+	t.Setenv("WHISPER_RETRY_WAIT_LIMIT", "2h")
 	opts, err := parse(t, "server")
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:1234", opts.Server.Listen)
 	assert.Equal(t, 5, opts.Server.MaxAttempts)
+	assert.Equal(t, 2*time.Hour, opts.Server.RetryWaitLimit)
 }
 
 func TestServerCmdValidation(t *testing.T) {
@@ -84,7 +86,8 @@ func TestServerCmdValidation(t *testing.T) {
 		"zero analyses each":   {"--max-analyses-per-principal", "0"},
 		"zero lease age":       {"--max-lease-age", "0s"},
 		"negative age factor":  {"--lease-age-factor", "-1"},
-		"negative retry grace": {"--retry-elsewhere-grace", "-1m"},
+		"zero retry wait":      {"--retry-wait-limit", "0s"},
+		"removed retry grace":  {"--retry-elsewhere-grace", "10m"},
 	} {
 		_, err := parse(t, append([]string{"server"}, args...)...)
 		assert.Error(t, err, name)

@@ -107,7 +107,7 @@ func TestPrepareFailureSurfaces(t *testing.T) {
 	j := e.Submit(sub, "public", api.JobParams{}, e2etest.MP4Like(4096))
 	failed := e.WaitJob(j.ID, api.JobFailed)
 	require.NotNil(t, failed.Error)
-	assert.Contains(t, *failed.Error, "ffmpeg failed")
+	assert.Contains(t, *failed.Error, "prepare task 0 failed after 1 attempt(s) (on worker "+w.ID()+"): ffmpeg failed")
 	assert.Equal(t, 1, failed.Tasks.Failed)
 	ev := e.WaitEvent(obs.EventTaskFailed, nil)
 	assert.Contains(t, ev[obs.FieldStderrTail], "Invalid data found when processing input")

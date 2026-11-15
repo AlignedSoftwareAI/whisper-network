@@ -160,19 +160,23 @@ func TestDeleteJobKillsChild(t *testing.T) {
 }
 
 // TestChildCrashIsRetriedThenFails: a crashing whisper-cli is reported as a
-// retryable failure with its stderr tail; once the attempts are used up
-// the job fails with the reason.
+// retryable failure with its stderr tail; the retry runs on the other
+// worker, and once the task has failed on two workers the job fails with
+// the reason.
 func TestChildCrashIsRetriedThenFails(t *testing.T) {
 	t.Parallel()
 	e := e2etest.New(t)
-	w := e.StartWorker("crashy", e2etest.ChildEnv(workertest.WhisperMode(workertest.ModeCrash)))
-	e.Approve(w.ID(), "public")
 	sub := e.Submitter("public")
 	job := e.Submit(sub, "public", api.JobParams{}, e2etest.SpeechWAV(2))
+	w := e.StartWorker("crashy", e2etest.ChildEnv(workertest.WhisperMode(workertest.ModeCrash)))
+	e.Approve(w.ID(), "public")
+	e.WaitEvent(obs.EventTaskFailed, func(m map[string]any) bool { return m[obs.FieldJobID] == job.ID })
+	w2 := e.StartWorker("crashy too", e2etest.ChildEnv(workertest.WhisperMode(workertest.ModeCrash)))
+	e.Approve(w2.ID(), "public")
 	failed := e.WaitJob(job.ID, api.JobFailed)
 	require.NotNil(t, failed.Error)
-	assert.Contains(t, *failed.Error, "transcribe task 1 failed after 2 attempt(s) (on workers "+w.ID()+", "+w.ID()+
-		"): whisper-cli failed (exit status 3)", "retry elsewhere is off: the one worker retries at once")
+	assert.Contains(t, *failed.Error, "transcribe task 1 failed after 2 attempt(s) (on workers "+w.ID()+", "+w2.ID()+
+		"): whisper-cli failed (exit status 3)")
 	var evs []map[string]any
 	e.Eventually(func() bool { // logged just after the job failed
 		evs = e.Logs.Events(t, obs.EventTaskFailed)

@@ -84,14 +84,10 @@ type Config struct {
 	ModelFactors map[string]float64
 	// PrepareCost is the fixed scheduling cost of a prepare task. Default 60.
 	PrepareCost float64
-	// MaxAttempts is how many counted leases a task may have. Default 2.
+	// MaxAttempts is how many distinct workers a task may fail on (fail or
+	// let its lease expire) before it fails its job. A worker never gets a
+	// task it failed back, so each retry runs elsewhere. Default 2.
 	MaxAttempts int
-	// RetryElsewhereGrace keeps a worker from leasing a task it failed or
-	// let expire until this long after that lease ended, so another worker
-	// gets the retry; once it has passed, the same worker may retry (a
-	// single-worker fleet still makes progress). Zero disables the rule.
-	// The server's --retry-elsewhere-grace defaults to 10 minutes.
-	RetryElsewhereGrace time.Duration
 	// PrepareMinSandbox is the minimum worker sandbox level for prepare
 	// tasks. Defaults to full.
 	PrepareMinSandbox api.SandboxLevel

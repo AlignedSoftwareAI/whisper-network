@@ -69,6 +69,10 @@ type Config struct {
 	JobRetention time.Duration
 	// PendingWorkerTTL deletes pending workers unseen this long. Default 168h.
 	PendingWorkerTTL time.Duration
+	// RetryWaitLimit bounds how long a task that failed on every worker
+	// that took it waits for another eligible worker: the reaper then fails
+	// its job, naming those workers (DESIGN.md §8.2). Default 24h.
+	RetryWaitLimit time.Duration
 	// EndedLeaseRetention keeps ended lease rows for debugging. Default 720h.
 	EndedLeaseRetention time.Duration
 	// RejectedWorkerRetention keeps rejected workers (so their tokens get a
@@ -166,6 +170,7 @@ func DefaultConfig() Config {
 		AudioRetention:          24 * time.Hour,
 		JobRetention:            720 * time.Hour,
 		PendingWorkerTTL:        7 * 24 * time.Hour,
+		RetryWaitLimit:          24 * time.Hour,
 		EndedLeaseRetention:     30 * 24 * time.Hour,
 		RejectedWorkerRetention: 30 * 24 * time.Hour,
 		Models:                  []string{"small.en", "large-v3-turbo"},
@@ -209,6 +214,7 @@ func (c *Config) applyDefaults() {
 	setDur(&c.AudioRetention, d.AudioRetention)
 	setDur(&c.JobRetention, d.JobRetention)
 	setDur(&c.PendingWorkerTTL, d.PendingWorkerTTL)
+	setDur(&c.RetryWaitLimit, d.RetryWaitLimit)
 	setDur(&c.EndedLeaseRetention, d.EndedLeaseRetention)
 	setDur(&c.RegisterInterval, d.RegisterInterval)
 	setDur(&c.SessionTTL, d.SessionTTL)

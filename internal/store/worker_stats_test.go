@@ -100,6 +100,7 @@ func TestWorkerStatsFailures(t *testing.T) {
 	f := newFixture(t)
 	w := f.worker(api.SandboxFull, f.pubID)
 	f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	f.job(f.pubID, "c", api.WeightMedium, 1, 10) // w never retries the first
 	_, err := f.s.Fail(f.ctx, f.claim(w).ID, w, "whisper crashed", true)
 	require.NoError(t, err)
 	_, err = f.s.Release(f.ctx, f.claim(w).ID, w)
@@ -180,8 +181,9 @@ func TestWorkerStatsBackfill(t *testing.T) {
 	a := f.worker(api.SandboxFull, f.pubID)
 	b := f.worker(api.SandboxFull, f.pubID)
 	idle := f.worker(api.SandboxFull, f.pubID)
+	c := f.worker(api.SandboxFull, f.pubID) // takes the retries
 
-	// a: a prepare and both tasks of its job, a second job, one failure.
+	// a: a prepare and both tasks of its job, one failure.
 	f.prepJob(f.pubID, "c")
 	l := f.claim(a)
 	samples := int64(20 * canonicalSampleRate)
@@ -196,18 +198,20 @@ func TestWorkerStatsBackfill(t *testing.T) {
 	_, err := f.s.Fail(f.ctx, f.claim(a).ID, a, "crashed", true)
 	require.NoError(t, err)
 	f.clk.Advance(time.Minute)
-	f.complete(f.claim(a))
-	// b: one expiry, one release.
+	f.complete(f.claim(c))
+	// b: one expiry; c: one release, then both retries.
 	f.job(f.pubID, "c", api.WeightMedium, 1, 5)
 	f.claim(b)
 	f.clk.Advance(ttl)
 	_, err = f.s.ExpireLeases(f.ctx)
 	require.NoError(t, err)
-	_, err = f.s.Release(f.ctx, f.claim(b).ID, b)
+	_, err = f.s.Release(f.ctx, f.claim(c).ID, c)
 	require.NoError(t, err)
+	f.complete(f.claim(c)) // so b's ended leases are not kept for a live task
 
-	live := map[string]api.WorkerStats{a: f.stats(a), b: f.stats(b), idle: f.stats(idle)}
-	require.EqualValues(t, 3, live[a].TranscribeTasks)
+	live := map[string]api.WorkerStats{a: f.stats(a), b: f.stats(b), c: f.stats(c), idle: f.stats(idle)}
+	require.EqualValues(t, 2, live[a].TranscribeTasks)
+	require.EqualValues(t, 2, live[c].TranscribeTasks)
 	require.EqualValues(t, 1, live[b].ExpiredLeases)
 
 	f.rollBackToV2()
@@ -223,8 +227,8 @@ func TestWorkerStatsBackfill(t *testing.T) {
 	f.rollBackToV2()
 	got := f.stats(a)
 	assert.EqualValues(t, 1, got.PrepareTasks)
-	assert.EqualValues(t, 3, got.TranscribeTasks)
-	assert.EqualValues(t, 2, got.Jobs)
+	assert.EqualValues(t, 2, got.TranscribeTasks)
+	assert.EqualValues(t, 1, got.Jobs)
 	assert.Equal(t, live[a].AudioS, got.AudioS)
 	assert.Equal(t, live[a].ComputeS, got.ComputeS)
 	assert.Zero(t, got.Failures)

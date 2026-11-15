@@ -56,11 +56,6 @@ type Lease struct {
 	// VTime is the queue's virtual time after this claim was charged. It is
 	// set only on leases returned by Claim (for the task.leased log event).
 	VTime float64
-	// SameWorkerRetry is true if this worker already failed this task or
-	// let a lease on it expire: no other worker took the retry within
-	// Config.RetryElsewhereGrace (or the rule is disabled). Set only on
-	// leases returned by Claim.
-	SameWorkerRetry bool
 }
 
 // API builds the wire lease. The server fills in the model and VAD hashes.
@@ -86,30 +81,26 @@ func (l *Lease) API(heartbeatInterval time.Duration) api.Lease {
 const processGrantSQL = `EXISTS (SELECT 1 FROM grants g WHERE g.principal = ? AND g.role = 'process'
 	AND (g.scope = '*' OR g.scope = 'queue:' || j.queue_id))`
 
-// failedHereSQL returns a condition (over t = tasks, with the worker id as
-// its first argument) that the worker has a failed or expired lease x on the
-// task that also meets extra (over x; "" for none). The t.attempts check
-// skips the lookup for tasks that never failed anywhere: a failed or expired
-// lease consumes an attempt for good, while a release refunds its own.
-func failedHereSQL(extra string) string {
-	if extra != "" {
-		extra = " AND " + extra
-	}
-	return `(t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
-		AND x.worker_id = ? AND x.outcome IN ('failed','expired')` + extra + `))`
-}
+// failedHereSQL is a condition (over t = tasks, with the worker id as its one
+// argument) that the worker has a failed or expired lease on the task. The
+// t.attempts check skips the lookup for tasks that never failed anywhere: a
+// task's attempts count the distinct workers its failed and expired leases
+// ran on (plus one while it is leased), so it is 0 for a pending task with
+// none.
+const failedHereSQL = `(t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
+	AND x.worker_id = ? AND x.outcome IN ('failed','expired')))`
 
 // eligibilitySQL returns the WHERE fragment (over t = tasks, j = jobs) that
-// selects pending tasks workerID may take at now, or ok = false if none can
-// match. The queue condition reads the worker's grants, so it is evaluated
-// inside the claim's transaction.
+// selects pending tasks workerID may take, or ok = false if none can match.
+// The queue condition reads the worker's grants, so it is evaluated inside
+// the claim's transaction.
 //
-// With a positive RetryElsewhereGrace it also leaves out tasks the worker
-// failed or let expire less than the grace ago (DESIGN.md §8.2). Because the
+// It also leaves out every task the worker failed or let expire: a worker
+// never gets such a task back (retry elsewhere, DESIGN.md §8.2). Because the
 // one fragment drives both the candidate (queue, class) pairs and the task
 // pick, an excluded task is never charged to its queue, and a pair whose
 // only pending tasks are excluded is not a candidate for this worker.
-func (s *Store) eligibilitySQL(workerID string, el Eligibility, now time.Time) (where string, args []any, ok bool) {
+func (s *Store) eligibilitySQL(workerID string, el Eligibility) (where string, args []any, ok bool) {
 	var kinds []string
 	if slices.Contains(el.Kinds, api.KindTranscribe) && len(el.Models) > 0 {
 		kinds = append(kinds, "(t.kind = 'transcribe' AND j.model IN ("+placeholders(len(el.Models))+"))")
@@ -123,12 +114,9 @@ func (s *Store) eligibilitySQL(workerID string, el Eligibility, now time.Time) (
 	if len(kinds) == 0 {
 		return "", nil, false
 	}
-	where = "t.state = 'pending' AND (" + strings.Join(kinds, " OR ") + ") AND " + processGrantSQL
-	args = append(args, WorkerPrincipal(workerID))
-	if g := s.cfg.RetryElsewhereGrace; g > 0 {
-		where += " AND NOT " + failedHereSQL("x.ended_at > ?")
-		args = append(args, workerID, toMS(now.Add(-g)))
-	}
+	where = "t.state = 'pending' AND (" + strings.Join(kinds, " OR ") + ") AND " + processGrantSQL +
+		" AND NOT " + failedHereSQL
+	args = append(args, WorkerPrincipal(workerID), workerID)
 	return where, args, true
 }
 
@@ -151,13 +139,12 @@ func (s *Store) Claim(ctx context.Context, workerID string, el Eligibility, ttl 
 		if state != api.WorkerActive {
 			return fmt.Errorf("claim by %s worker: %w", state, ErrWorkerInactive)
 		}
-		now := s.now()
-		where, args, ok := s.eligibilitySQL(workerID, el, now)
+		where, args, ok := s.eligibilitySQL(workerID, el)
 		if !ok {
 			return nil
 		}
 		var err error
-		lease, err = s.claim(ctx, tx, workerID, where, args, ttl, now)
+		lease, err = s.claim(ctx, tx, workerID, where, args, ttl, s.now())
 		return err
 	})
 	if err != nil {
@@ -193,12 +180,6 @@ func (s *Store) claim(ctx context.Context, tx *sql.Tx, workerID, where string, a
 		return nil, err
 	}
 
-	var again bool
-	if err := tx.QueryRowContext(ctx, `SELECT `+failedHereSQL("")+` FROM tasks t WHERE t.job_id = ? AND t.seq = ?`,
-		workerID, jobID, seq).Scan(&again); err != nil {
-		return nil, fmt.Errorf("claim: earlier failures: %w", err)
-	}
-
 	res, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'leased', attempts = attempts + 1, worker_id = ?
 		WHERE job_id = ? AND seq = ? AND state = 'pending'`, workerID, jobID, seq)
 	if err := mustAffect(res, err, "claim: lease task"); err != nil {
@@ -219,7 +200,6 @@ func (s *Store) claim(ctx context.Context, tx *sql.Tx, workerID, where string, a
 		return nil, err
 	}
 	l.VTime = st.Get(sched.QueueKey(k.Queue))
-	l.SameWorkerRetry = again
 	return l, nil
 }
 

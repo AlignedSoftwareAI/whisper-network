@@ -20,8 +20,9 @@ type LeaseEnd struct {
 	Kind     api.TaskKind
 	WorkerID string
 	Outcome  api.LeaseOutcome
-	// Attempt is the task's counted attempts after this lease ended
-	// (a release does not count).
+	// Attempt is the task's counted attempts after this lease ended: the
+	// number of distinct workers it has failed or expired on (a release or
+	// cancellation does not count).
 	Attempt int
 	// Requeued is true if the task went back to pending.
 	Requeued bool
@@ -115,16 +116,18 @@ func (s *Store) checkLive(l leaseRow, now time.Time) error {
 
 // endLease ends a live lease with outcome, counts it in its worker's
 // counters (failed and expired only), and disposes of its task:
-//   - consume = false refunds the attempt the lease was charged (release,
-//     worker rejection);
-//   - the task requeues if retryable and its counted attempts are below
+//   - the task's attempts become the number of distinct workers it has
+//     failed or expired on (DESIGN.md §4.2), so a release or cancellation
+//     refunds the attempt its lease was charged, and a second failed or
+//     expired lease on the same worker counts nothing;
+//   - the task requeues if retryable and those attempts are below
 //     MaxAttempts, applying the scheduler's reactivation rule;
 //   - otherwise the task fails and fails its job.
 //
 // It returns nil if the lease had already ended (e.g. cancelled by a sibling
 // earlier in the same transaction).
 func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome api.LeaseOutcome,
-	consume, retryable bool, reason string, now time.Time) (*LeaseEnd, error) {
+	retryable bool, reason string, now time.Time) (*LeaseEnd, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE leases SET ended_at = ?, outcome = ? WHERE id = ? AND ended_at IS NULL`,
 		toMS(now), string(outcome), l.ID)
 	if err != nil {
@@ -136,11 +139,12 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 	if err := countLeaseEnd(ctx, tx, l.WorkerID, outcome); err != nil {
 		return nil, err
 	}
-	end := &LeaseEnd{LeaseID: l.ID, JobID: l.JobID, Seq: l.Seq, Kind: l.Kind, WorkerID: l.WorkerID,
-		Outcome: outcome, Attempt: l.Attempts}
-	if !consume {
-		end.Attempt--
+	workers, err := failedOn(ctx, tx, l.JobID, l.Seq)
+	if err != nil {
+		return nil, err
 	}
+	end := &LeaseEnd{LeaseID: l.ID, JobID: l.JobID, Seq: l.Seq, Kind: l.Kind, WorkerID: l.WorkerID,
+		Outcome: outcome, Attempt: len(workers)}
 	errText := sql.NullString{String: reason, Valid: reason != ""}
 
 	if retryable && end.Attempt < s.cfg.MaxAttempts {
@@ -160,19 +164,7 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 		WHERE job_id = ? AND seq = ?`, end.Attempt, errText, l.JobID, l.Seq); err != nil {
 		return nil, fmt.Errorf("fail task: %w", err)
 	}
-	workers, err := failedOn(ctx, tx, l.JobID, l.Seq)
-	if err != nil {
-		return nil, err
-	}
-	msg := fmt.Sprintf("%s task %d failed after %d attempt(s)", l.Kind, l.Seq, end.Attempt)
-	switch len(workers) {
-	case 0:
-	case 1:
-		msg += " (on worker " + workers[0] + ")"
-	default:
-		msg += " (on workers " + strings.Join(workers, ", ") + ")"
-	}
-	msg += ": " + reason
+	msg := failedAttempts(l.Kind, l.Seq, workers) + ": " + reason
 	end.Cancelled, err = failJob(ctx, tx, l.JobID, msg, now)
 	if err != nil {
 		return nil, err
@@ -181,12 +173,26 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 	return end, nil
 }
 
-// failedOn returns the worker of each failed or expired lease on a task,
-// oldest first (repeating a worker that failed it more than once), so a
-// failed job's error says where its attempts ran.
+// failedAttempts begins a failed job's error: which task failed, after how
+// many counted attempts, and on which workers.
+func failedAttempts(kind api.TaskKind, seq int, workers []string) string {
+	msg := fmt.Sprintf("%s task %d failed after %d attempt(s)", kind, seq, len(workers))
+	switch len(workers) {
+	case 0:
+	case 1:
+		msg += " (on worker " + workers[0] + ")"
+	default:
+		msg += " (on workers " + strings.Join(workers, ", ") + ")"
+	}
+	return msg
+}
+
+// failedOn returns the distinct workers that failed a task or let a lease
+// on it expire, in the order of their first such lease. Their number is the
+// task's counted attempts, and a failed job's error names them.
 func failedOn(ctx context.Context, tx *sql.Tx, jobID string, seq int) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT worker_id FROM leases WHERE job_id = ? AND seq = ?
-		AND outcome IN ('failed','expired') ORDER BY created_at, rowid`, jobID, seq)
+		AND outcome IN ('failed','expired') GROUP BY worker_id ORDER BY MIN(created_at), MIN(rowid)`, jobID, seq)
 	if err != nil {
 		return nil, fmt.Errorf("failed attempts: %w", err)
 	}
@@ -417,20 +423,22 @@ func (s *Store) AcceptPrepare(ctx context.Context, leaseID, workerID string, p P
 }
 
 // Fail ends a live lease as failed. The task requeues if retryable and it
-// has attempts left; otherwise the task and its job fail.
+// has failed on fewer than MaxAttempts distinct workers; otherwise the task
+// and its job fail. The worker is never offered the task again.
 func (s *Store) Fail(ctx context.Context, leaseID, workerID, reason string, retryable bool) (*LeaseEnd, error) {
-	return s.endHeld(ctx, leaseID, workerID, api.OutcomeFailed, true, retryable, reason)
+	return s.endHeld(ctx, leaseID, workerID, api.OutcomeFailed, retryable, reason)
 }
 
 // Release ends a live lease voluntarily (graceful worker shutdown). The task
 // returns to pending and the attempt the lease was charged is refunded, so
-// a release never counts toward MaxAttempts. Scheduler cost is not refunded.
+// a release never counts toward MaxAttempts and does not keep the worker
+// from taking the task again. Scheduler cost is not refunded.
 func (s *Store) Release(ctx context.Context, leaseID, workerID string) (*LeaseEnd, error) {
-	return s.endHeld(ctx, leaseID, workerID, api.OutcomeReleased, false, true, "")
+	return s.endHeld(ctx, leaseID, workerID, api.OutcomeReleased, true, "")
 }
 
 func (s *Store) endHeld(ctx context.Context, leaseID, workerID string, outcome api.LeaseOutcome,
-	consume, retryable bool, reason string) (*LeaseEnd, error) {
+	retryable bool, reason string) (*LeaseEnd, error) {
 	now := s.now()
 	var end *LeaseEnd
 	err := s.write(ctx, func(tx *sql.Tx) error {
@@ -438,14 +446,16 @@ func (s *Store) endHeld(ctx context.Context, leaseID, workerID string, outcome a
 		if err != nil {
 			return err
 		}
-		end, err = s.endLease(ctx, tx, l, outcome, consume, retryable, reason, now)
+		end, err = s.endLease(ctx, tx, l, outcome, retryable, reason, now)
 		return err
 	})
 	return end, err
 }
 
 // ExpireLeases ends every live lease whose expiry has passed. Each task
-// requeues (with reactivation) or, at MaxAttempts, fails its job.
+// requeues (with reactivation) or, once it has failed or expired on
+// MaxAttempts distinct workers, fails its job. The lease's worker is never
+// offered the task again.
 func (s *Store) ExpireLeases(ctx context.Context) ([]LeaseEnd, error) {
 	now := s.now()
 	var out []LeaseEnd
@@ -459,7 +469,7 @@ func (s *Store) ExpireLeases(ctx context.Context) ([]LeaseEnd, error) {
 			if !l.TaskExists {
 				continue // unreachable: deleting a job ends its leases
 			}
-			end, err := s.endLease(ctx, tx, l, api.OutcomeExpired, true, true, "lease expired", now)
+			end, err := s.endLease(ctx, tx, l, api.OutcomeExpired, true, "lease expired", now)
 			if err != nil {
 				return err
 			}

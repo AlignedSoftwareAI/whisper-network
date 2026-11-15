@@ -250,12 +250,15 @@ func TestPrepareInvalidResultCountsAttempts(t *testing.T) {
 	h := newHarness(t)
 	client := h.client(submitOn("public"))
 	wid, wtok := h.activeWorker(api.WorkerFacts{}, "public")
+	w2id, w2tok := h.activeWorker(api.WorkerFacts{}, "public")
 	job := h.submit(client, "public", api.JobParams{Model: "small.en"}, []byte("definitely not audio, just bytes"))
 	assert.Equal(t, api.JobPreparing, job.State)
 
-	for attempt := 1; attempt <= 2; attempt++ {
+	// Each attempt runs on another worker: one never gets back a task it failed.
+	for attempt, w := range [][2]string{{wid, wtok}, {w2id, w2tok}} {
+		wid, wtok := w[0], w[1]
 		l := h.claim(wid, wtok, "", nil)
-		require.NotNil(t, l, "attempt %d", attempt)
+		require.NotNil(t, l, "attempt %d", attempt+1)
 		assert.Equal(t, api.KindPrepare, l.Kind)
 		resp, b := h.putFLAC(l, wtok, []byte("fLaC but not really"))
 		p := h.expectProblem(resp, b, http.StatusUnprocessableEntity, api.ProblemResultInvalid)

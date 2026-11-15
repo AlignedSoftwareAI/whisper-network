@@ -90,9 +90,11 @@ func TestInvalidTranscribeResultCountsAttempt(t *testing.T) {
 	resp, b := h.putResult(l, wtok, bad)
 	h.expectProblem(resp, b, http.StatusUnprocessableEntity, api.ProblemResultInvalid)
 
-	l2 := h.claim(wid, wtok, "", nil)
+	assert.Nil(t, h.claim(wid, wtok, "", nil), "not back to the worker that sent the bad result")
+	w2id, w2tok := h.activeWorker(api.WorkerFacts{}, "public")
+	l2 := h.claim(w2id, w2tok, "", nil)
 	require.NotNil(t, l2, "requeued after one counted attempt")
-	resp, b = h.call("PUT", "/lease/"+l2.ID+"/result", wtok, "not an object")
+	resp, b = h.call("PUT", "/lease/"+l2.ID+"/result", w2tok, "not an object")
 	h.expectProblem(resp, b, http.StatusUnprocessableEntity, api.ProblemResultInvalid)
 	assert.Equal(t, api.JobFailed, h.job(job.ID).State)
 }
@@ -118,9 +120,11 @@ func TestFailureAndRelease(t *testing.T) {
 	h.expect("POST", "/lease/"+l.ID+"/failure", wtok,
 		api.FailureReport{Reason: "whisper-cli crashed", StderrTail: "segfault at 0x0", Retryable: true},
 		http.StatusNoContent, nil)
-	l = h.claim(wid, wtok, "", nil)
+	assert.Nil(t, h.claim(wid, wtok, "", nil), "never back to the worker that failed it")
+	w2id, w2tok := h.activeWorker(api.WorkerFacts{}, "public")
+	l = h.claim(w2id, w2tok, "", nil)
 	require.NotNil(t, l, "retryable failure requeues")
-	h.expect("POST", "/lease/"+l.ID+"/failure", wtok, api.FailureReport{Reason: "out of memory", Retryable: true},
+	h.expect("POST", "/lease/"+l.ID+"/failure", w2tok, api.FailureReport{Reason: "out of memory", Retryable: true},
 		http.StatusNoContent, nil)
 	j := h.job(job.ID)
 	assert.Equal(t, api.JobFailed, j.State)
