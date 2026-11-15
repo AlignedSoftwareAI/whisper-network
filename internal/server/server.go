@@ -325,6 +325,9 @@ type Server struct {
 	// disconnecting there.
 	afterClaim func(ctx context.Context)
 
+	// llms is the rendered /llms.txt (llms.go).
+	llms []byte
+
 	cfg         Config
 	st          *store.Store
 	blobs       *blobs.Store
@@ -428,6 +431,11 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	if deps.UI != nil {
 		s.ui = deps.UI(s)
 	}
+	llms, err := renderLLMs(s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.llms = llms
 	s.handler = s.accessLog(s.recoverer(s.secureHeaders(s.deadlines(s.routes()))))
 	return s, nil
 }
