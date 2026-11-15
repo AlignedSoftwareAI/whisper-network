@@ -16,7 +16,7 @@
   {{- if .User}}
   <nav aria-label="Main">
     <a href="/ui/"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
-    {{- if .Nav.Workers}}<a href="/ui/workers"{{if eq .Active "workers"}} aria-current="page"{{end}}>Workers</a>{{end}}
+    {{- if .Nav.Workers}}<a href="/ui/workers"{{if or (eq .Active "workers") (eq .Active "worker")}} aria-current="page"{{end}}>Workers</a>{{end}}
     <a href="/ui/queues"{{if or (eq .Active "queues") (eq .Active "queue") (eq .Active "job")}} aria-current="page"{{end}}>Queues</a>
     {{- if .Nav.Users}}<a href="/ui/users"{{if eq .Active "users"}} aria-current="page"{{end}}>Users</a>{{end}}
     {{- if .Nav.Clients}}<a href="/ui/clients"{{if eq .Active "clients"}} aria-current="page"{{end}}>Clients</a>{{end}}

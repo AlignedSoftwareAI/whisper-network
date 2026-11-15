@@ -48,25 +48,30 @@ func TestPagesByPrincipal(t *testing.T) {
 	t.Parallel()
 	f := newFleet(t)
 	jobPage := "/ui/jobs/" + f.job.ID
+	w1Page, w2Page := "/ui/workers/"+f.w1, "/ui/workers/"+f.w2
 	pages := map[string]map[string]pageCase{
 		"root": {
-			"/ui/":                  {200, []string{"audio-hours", "Fleet share", `href="/ui/users"`, `href="/ui/audit"`}, nil},
-			"/ui/dashboard/stats":   {200, []string{`id="stats"`}, []string{"<html"}},
-			"/ui/workers":           {200, []string{"w1-host", "w2-host", "Approve", `value="public"`, `value="other"`}, nil},
-			"/ui/queues":            {200, []string{"Create a queue", "public", "other"}, nil},
-			"/ui/queues/public":     {200, []string{`name="weight"`, `name="description"`, "board-meeting", "Access"}, nil},
-			jobPage:                 {200, []string{"board-meeting", "Delete job"}, []string{"Download transcript"}},
-			"/ui/users":             {200, []string{"Create a user", "qa", "plain"}, nil},
-			"/ui/clients":           {200, []string{"Mint a client token"}, nil},
-			"/ui/audit":             {200, []string{"user.create"}, nil},
-			"/ui/password":          {200, []string{"Change password"}, nil},
-			"/ui/jobs/no-such-job":  {404, nil, nil},
-			"/ui/queues/no-such-q":  {404, nil, nil},
-			"/ui/no/such/page/here": {404, nil, nil},
+			"/ui/":                {200, []string{"audio-hours", "Fleet share", `href="/ui/users"`, `href="/ui/audit"`}, nil},
+			"/ui/dashboard/stats": {200, []string{`id="stats"`}, []string{"<html"}},
+			"/ui/workers": {200, []string{"first worker", "w1-host", "second worker", `href="` + w1Page + `"`,
+				`href="` + w1Page + `#approve"`, "Approve"}, []string{`name="queue"`, "Reject"}},
+			w1Page:                       {200, []string{"first worker", "w1-host", `value="public"`, `value="other"`, "Reject"}, nil},
+			"/ui/workers/no-such-worker": {404, nil, nil},
+			"/ui/queues":                 {200, []string{"Create a queue", "public", "other"}, nil},
+			"/ui/queues/public":          {200, []string{`name="weight"`, `name="description"`, "board-meeting", "Access"}, nil},
+			jobPage:                      {200, []string{"board-meeting", "Delete job"}, []string{"Download transcript"}},
+			"/ui/users":                  {200, []string{"Create a user", "qa", "plain"}, nil},
+			"/ui/clients":                {200, []string{"Mint a client token"}, nil},
+			"/ui/audit":                  {200, []string{"user.create"}, nil},
+			"/ui/password":               {200, []string{"Change password"}, nil},
+			"/ui/jobs/no-such-job":       {404, nil, nil},
+			"/ui/queues/no-such-q":       {404, nil, nil},
+			"/ui/no/such/page/here":      {404, nil, nil},
 		},
 		"qa": { // queue_admin on "other" only
 			"/ui/":              {200, []string{"audio-hours", `href="/ui/workers"`}, []string{`href="/ui/users"`, `href="/ui/audit"`}},
-			"/ui/workers":       {200, []string{"w1-host", "w2-host"}, []string{"Approve", "Pause", "Reject"}},
+			"/ui/workers":       {200, []string{"w1-host", "w2-host", `href="` + w1Page + `"`}, []string{"Approve", "Pause", "Reject"}},
+			w1Page:              {200, []string{"w1-host"}, []string{"Approve", "Pause", "Reject", `name="queue"`}},
 			"/ui/queues":        {200, []string{"public", "other"}, []string{"Create a queue"}},
 			"/ui/queues/public": {200, []string{"no access to this queue"}, []string{`name="weight"`, `name="description"`, "board-meeting", "Access"}},
 			"/ui/queues/other":  {200, []string{`name="description"`, "only an admin can change it", "Access"}, []string{`name="weight"`}},
@@ -77,7 +82,9 @@ func TestPagesByPrincipal(t *testing.T) {
 		},
 		"wa": { // worker_admin on w1 only
 			"/ui/":              {200, []string{"audio-hours"}, nil},
-			"/ui/workers":       {200, []string{"w1-host", "Approve", "Reject"}, []string{"w2-host", `name="queue"`}},
+			"/ui/workers":       {200, []string{"w1-host", "Approve"}, []string{"w2-host", `name="queue"`}},
+			w1Page:              {200, []string{"w1-host", "Approve", "Reject"}, []string{`name="queue"`}},
+			w2Page:              {404, nil, []string{"w2-host"}},
 			"/ui/queues/public": {200, nil, []string{`name="description"`, "board-meeting"}},
 			jobPage:             {404, nil, nil},
 			"/ui/users":         {403, nil, nil},
@@ -88,6 +95,7 @@ func TestPagesByPrincipal(t *testing.T) {
 			"/ui/":                {200, []string{"no access to any queue"}, []string{"audio-hours", `href="/ui/workers"`}},
 			"/ui/dashboard/stats": {403, nil, nil},
 			"/ui/workers":         {403, nil, nil},
+			w1Page:                {404, nil, []string{"w1-host"}},
 			"/ui/queues":          {200, []string{"public"}, []string{"Create a queue", "view jobs"}},
 			"/ui/queues/public":   {200, []string{"no access to this queue"}, []string{"board-meeting", `name="description"`, "Access"}},
 			jobPage:               {404, nil, nil},
@@ -179,11 +187,11 @@ func TestXSSEscaped(t *testing.T) {
 	e := newEnv(t)
 	e.user("root", api.Grant{Role: api.RoleAdmin, Scope: "*"})
 	const evil = `<script>alert("x")</script><img src=x onerror=alert(1)>`
-	_, _ = e.worker("host-x", evil)
 	tok := e.client(api.Grant{Role: api.RoleSubmit, Scope: "queue:public"})
 	j := e.submit(tok, "public", evil)
 	b := e.login("root")
-	for _, p := range []string{"/ui/workers", "/ui/queues/public", "/ui/jobs/" + j.ID} {
+	wid, _ := e.worker(evil, evil)
+	for _, p := range []string{"/ui/workers", "/ui/workers/" + wid, "/ui/queues/public", "/ui/jobs/" + j.ID} {
 		resp, body := b.get(p)
 		require.Equal(t, http.StatusOK, resp.StatusCode, p)
 		assert.NotContains(t, body, `<script>alert`, p)

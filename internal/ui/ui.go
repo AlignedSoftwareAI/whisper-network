@@ -88,6 +88,7 @@ func (u *UI) routes() *http.ServeMux {
 	m.Handle("GET /ui/dashboard/stats", u.authed(u.handleDashboardStats))
 
 	m.Handle("GET /ui/workers", u.authed(u.handleWorkers))
+	m.Handle("GET /ui/workers/{id}", u.authed(u.handleWorker))
 	m.Handle("POST /ui/workers/{id}/approve", u.authed(u.handleApproveWorker))
 	m.Handle("POST /ui/workers/{id}/{verb}", u.authed(u.handleWorkerState))
 
