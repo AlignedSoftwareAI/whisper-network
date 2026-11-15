@@ -38,7 +38,9 @@ func TestCanonicalSplitAcrossTwoWorkers(t *testing.T) {
 	job := e.Submit(sub, "public", api.JobParams{Prompt: secretPrompt, Label: "council-2026-11-03",
 		Source: "https://example.org/watch?v=e2e", Metadata: []byte(`{"requester":"Agatha Pennywhistle"}`)},
 		e2etest.SpeechWAV(seconds))
-	assert.Equal(t, api.JobQueued, job.State, "a canonical upload skips prepare")
+	// Both workers are already long-polling, so a task may be claimed
+	// before the upload response is built: queued or running, never preparing.
+	assert.Contains(t, []api.JobState{api.JobQueued, api.JobRunning}, job.State, "a canonical upload skips prepare")
 	require.GreaterOrEqual(t, job.Tasks.Total, 3, "17 s at a 4 s target splits into several tasks")
 
 	done := e.WaitJob(job.ID, api.JobDone)
