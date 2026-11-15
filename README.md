@@ -181,7 +181,10 @@ a hardened deployment.
 ## Quick start with binaries
 
 Release archives for linux, darwin and windows (amd64 and arm64) are attached
-to each GitHub release. Or build from source (Go version from `go.mod`):
+to each GitHub release. Only Linux has been run in a real deployment; the
+macOS and Windows builds compile and run the unit tests in CI but are
+otherwise untested (see [Project status](#project-status)). Or build from
+source (Go version from `go.mod`):
 
 ```sh
 make            # builds ./whisper-network
@@ -481,6 +484,16 @@ Pre-1.0. Expect breaking changes to flags and the HTTP API between releases;
 changes are described in the release notes. There is one server and one SQLite
 database per deployment; high availability is a non-goal. Open design questions
 are in DESIGN.md section 14.
+
+Platform support:
+
+| Platform | Status |
+|---|---|
+| Linux, amd64 and arm64 (containers or binaries) | Developed and run on Linux; the real-engine integration test (ffmpeg and whisper.cpp in Docker) passes |
+| macOS (darwin) | **Never run outside CI.** Binaries are built and the unit tests run on GitHub's macOS runners; no real worker or server has been operated on a Mac. No sandbox (level `none`), so no prepare tasks under the default policy |
+| Windows | **Never run outside CI.** Binaries are built and the unit tests run on GitHub's Windows runners; no real worker or server has been operated on Windows. No sandbox, memory is not detected (`--memory` is required), and child processes are not confined |
+
+Reports from macOS or Windows use are welcome.
 
 ## License
 
