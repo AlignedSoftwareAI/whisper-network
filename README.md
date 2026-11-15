@@ -63,13 +63,15 @@ A worker claims one task at a time by long-polling the server. The claim
 creates a **lease**: a random ID that expires unless the worker heartbeats
 (every 30 s by default; leases live three intervals). The lease ID fences all
 later calls. If the lease has expired, was cancelled, or the job was deleted,
-the worker gets `410 Gone` and must stop. A task that starts twice without
-finishing fails the job (`--max-attempts`, default 2). A task that failed
-or expired on one worker is retried on another: the worker it failed on gets
-it back only if no other worker has taken it within
-`--retry-elsewhere-grace` (default 10m), so a single-worker fleet still
-makes progress. When the last transcribe task finishes, the server assembles
-the transcript.
+the worker gets `410 Gone` and must stop. A task that failed or whose lease
+expired on a worker is never given back to that worker; it is retried on
+another one, and fails the job only after failing on `--max-attempts`
+different workers (default 2), so one bad worker cannot fail a job. A
+failure caused by the input (for example media ffmpeg cannot read) fails the
+job at once. If no other eligible worker takes a failed task within
+`--retry-wait-limit` (default 24h), for example on a single-worker fleet,
+the job fails with an error naming the workers that failed it. When the last
+transcribe task finishes, the server assembles the transcript.
 
 ## Quick start with Docker
 
@@ -334,8 +336,8 @@ for the authoritative list.
 | `--require-tls` | off | `WHISPER_REQUIRE_TLS` | Refuse to start without TLS |
 | `--trust-proxy` | off | `WHISPER_TRUST_PROXY` | Trust `X-Forwarded-For`; only behind a proxy that sets it |
 | `--heartbeat-interval` | `30s` | `WHISPER_HEARTBEAT_INTERVAL` | Worker heartbeat interval; leases live 3x this |
-| `--max-attempts` | `2` | `WHISPER_MAX_ATTEMPTS` | Counted leases per task before the job fails |
-| `--retry-elsewhere-grace` | `10m` | `WHISPER_RETRY_ELSEWHERE_GRACE` | A worker that failed a task (or let its lease expire) may retry it only after this long, so another worker gets the retry first; `0` disables |
+| `--max-attempts` | `2` | `WHISPER_MAX_ATTEMPTS` | Distinct workers a task may fail on (or let its lease expire) before the job fails; a worker never retries a task it failed |
+| `--retry-wait-limit` | `24h` | `WHISPER_RETRY_WAIT_LIMIT` | Fail a job whose failed task no other eligible worker has taken for this long |
 | `--task-target` | `60m` | `WHISPER_TASK_TARGET` | Target audio length of one transcribe task |
 | `--split-window` | `60s` | `WHISPER_SPLIT_WINDOW` | Search window around each split point |
 | `--class-weights` | `low=1,medium=2,high=4` | `WHISPER_CLASS_WEIGHTS` | Job weight-class shares |

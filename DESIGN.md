@@ -146,7 +146,7 @@ Trade-off: the worker image ships three binaries (`whisper-network`, `whisper-cl
 ```
  preparing ──▶ queued ──▶ running ──▶ done
      │            │          │
-     └────────────┴──────────┴──▶ failed     (a task exhausted its attempts; sibling tasks cancelled)
+     └────────────┴──────────┴──▶ failed     (a task failed: attempts exhausted, input failure, or retry wait limit; sibling tasks cancelled)
  any state ──DELETE──▶ (row and blobs removed; active leases cancelled)
 ```
 
@@ -158,12 +158,18 @@ Trade-off: the worker image ships three binaries (`whisper-network`, `whisper-cl
  pending ──claim──▶ leased ──result──▶ done
     ▲                 │
     └── expired/released/failed (attempts < max) ──┘
-                      └── failed (attempts == max) ──▶ failed
+                      ├── failed (attempts == max, or not retryable) ──▶ failed
+ pending ──waited retry_wait_limit after failing (reaper, §8.2)──▶ failed
 ```
 
-`attempts` increments when a lease is created. The default `max_attempts` is 2: a task that has started twice without finishing is abandoned rather than retried forever. A lease that times out counts as an attempt. A lease the worker releases voluntarily on shutdown does **not** count.
+**A bad worker must never cause a failed job.** A failure is often the worker's fault (a broken model file or build, too little memory, a flaky disk), so a task is never retried on a worker that already failed it, and its attempts count workers, not leases:
 
-**Retry elsewhere.** A requeued task goes to a different worker if one will take it: a worker that failed the task or let its lease expire may not lease it again until `--retry-elsewhere-grace` (default 10 min) after that lease ended (§8.2). A failure is often the worker's fault (a broken model file or build, too little memory, a flaky disk), and an immediate retry on the same machine would burn the last attempt there. A released lease does not exclude its worker. When a job fails, its error names the worker of each failed attempt, e.g. `transcribe task 1 failed after 2 attempt(s) (on workers A, B): …`.
+- **Attempts count distinct workers.** `attempts` is the number of distinct workers on which the task failed or whose lease on it expired, plus one while it is leased. The default `max_attempts` is 2: a task that failed on two different workers is abandoned rather than retried forever. A failure and an expiry on the same worker count once. A lease the worker releases voluntarily (shutdown, drain), or one cancelled by the server (worker rejected, grant revoked), does **not** count.
+- **Retry elsewhere.** A worker never leases a task again after failing it or letting its lease on it expire (§8.2). A released lease does not exclude its worker.
+- **Input failures fail at once.** A failure the worker attributes to the input (`retryable: false`, e.g. ffmpeg's "Invalid data found when processing input") fails the job immediately: another worker would fail the same way.
+- **Wait limit.** A task that failed and has since waited `--retry-wait-limit` (default 24 h) without any other eligible worker taking it fails its job (§8.2).
+
+When a job fails, its error names the workers its task failed on, e.g. `transcribe task 1 failed after 2 attempt(s) (on workers A, B): out of memory`, or `transcribe task 1 failed after 1 attempt(s) (on worker A); no other eligible worker took it within 24h: out of memory`.
 
 ### 4.3 Schema (SQLite)
 
@@ -432,7 +438,7 @@ Model choice stays with the client. The rule "`en` → `small.en`, anything else
 | `GET /lease/{id}/input` | Prepare: the original bytes. Transcribe: a WAV stream (16 kHz mono s16) decoded from the canonical FLAC for this task's sample range. `Range` is supported for prepare; transcribe input is regenerated on retry. | lease holder, live lease |
 | `POST /lease/{id}/heartbeat` | Extend the lease. Optional body: worker gauges (§10.2). Returns `200 {expires_at}`, or `410` if expired, cancelled or the job was deleted, or if the lease may not be extended any more: the worker is neither active nor paused, no longer holds `process` on the lease's queue, or the lease is past its maximum age (§8.3). The worker must then kill the child. | lease holder |
 | `PUT /lease/{id}/result` | Prepare: body is the canonical FLAC (`audio/flac`). Transcribe: segments JSON. Idempotent for the same lease. `410` if the lease is no longer live; `422` if validation fails (counts as a failed attempt). | lease holder |
-| `POST /lease/{id}/failure` | `{"reason":"…","stderr_tail":"…","retryable":true}`. Ends the lease; the task requeues if attempts remain and `retryable`. | lease holder |
+| `POST /lease/{id}/failure` | `{"reason":"…","stderr_tail":"…","retryable":true}`. Ends the lease; the task requeues for another worker if attempts remain and `retryable` (§8.2). | lease holder |
 | `DELETE /lease/{id}` | Voluntary release on graceful shutdown. Does not consume an attempt. | lease holder |
 | `GET /models/{name}` | Model file (ggml), sha256 in `ETag`. The server keeps a cache, filled from upstream on first request and pinned by hash. | any active worker |
 
@@ -648,20 +654,22 @@ Each queue has a virtual time `V_q`, and each (queue, class) pair has `V_qc`. On
 
 **Retry elsewhere (anti-affinity)**
 
-A task the claiming worker failed, or whose lease expired on it, is not eligible for that worker until `--retry-elsewhere-grace` (default 10 min) after that lease ended. Released and cancelled leases do not count. The condition is part of the eligibility fragment, so it applies to the candidate query and to the pick inside the chosen (q, c) alike:
+A task the claiming worker failed, or whose lease expired on it, is never eligible for that worker again. Released and cancelled leases do not count. The condition is part of the eligibility fragment, so it applies to the candidate query and to the pick inside the chosen (q, c) alike:
 
 ```sql
 AND NOT (t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x
   WHERE x.job_id = t.job_id AND x.seq = t.seq AND x.worker_id = :worker
-    AND x.outcome IN ('failed','expired') AND x.ended_at > :now - :grace))
+    AND x.outcome IN ('failed','expired')))
 ```
 
-`t.attempts > 0` skips the lookup for tasks that never failed (a release refunds its attempt), and a partial index on failed and expired leases (`job_id, seq, worker_id, ended_at`) serves the rest.
+`t.attempts > 0` skips the lookup for tasks that never failed (a pending task's attempts are the number of workers it failed on), and a partial index on failed and expired leases (`job_id, seq, worker_id, ended_at`) serves the rest.
 
-- **Fairness.** An excluded task is invisible to this worker's claim: a (q, c) whose only pending tasks are excluded is not a candidate, so the worker is served from its other candidates instead of getting nothing, and nothing is charged for the skipped task. The retry is charged to its queue when another worker (or, after the grace, the same one) takes it.
-- **Only one eligible worker.** Exclusion is not permanent. If no other worker takes the task within the grace (none is eligible, or all are busy), the worker that failed it may retry it. A single-worker fleet, or a queue only one worker processes, therefore still makes progress, delayed by at most the grace plus one claim long-poll (nothing wakes a waiting claim when the grace ends). The `task.leased` event of such a retry carries a `reason`, so a repeat failure on the same machine is visible. The alternative, failing the job at once with "only worker W is eligible and it already failed", was rejected: it turns every transient failure on a small fleet into a failed job, and whether another worker is eligible depends on which workers happen to be connected, which the claim cannot know.
-- **Disabling.** `--retry-elsewhere-grace 0` turns the rule off: the failing worker may retry at once, as before.
-- **Visibility.** A failed job's error names the worker of each failed or expired attempt (§4.2).
+- **Attempts.** When a lease ends, the task's `attempts` is recomputed as the number of distinct workers among its failed and expired leases (§4.2). The task fails once that reaches `--max-attempts`, so every attempt it gets runs on a different worker. Because a worker never gets the task back, a repeat on one worker cannot normally happen; counting distinct workers also covers a failure and an expiry recorded for the same worker (e.g. leases from a server version without this rule).
+- **Fairness.** An excluded task is invisible to this worker's claim: a (q, c) whose only pending tasks are excluded is not a candidate, so the worker is served from its other candidates instead of getting nothing, and nothing is charged for the skipped task. The retry is charged to its queue when another worker takes it.
+- **Only one eligible worker: the wait limit.** Exclusion is permanent, so a task whose every eligible worker has failed it would wait forever. The reaper (§8.5) fails such a task, and its job, once it has been pending for `--retry-wait-limit` (default 24 h) since it last went back to pending, with no worker having taken it since. The error names the workers that failed it and says no other eligible worker took it within the limit. Whether another worker is eligible is not knowable at claim time (it depends on which workers happen to be connected, busy or paused), so the rule is a wait, not a check: a worker that comes online or is approved within the limit still takes the retry. A worker that takes the task and releases it (shutdown, drain) restarts the wait; one that fails it adds itself to the excluded workers. A task that never failed is not affected: queued work waits as long as it needs.
+- **Retention.** The reaper's ended-lease pruning (§8.5) keeps the leases of a task that is still pending or leased, whatever their age: they decide who may take it and how many attempts it has left.
+- **Why not "retry on the same worker after a grace".** An earlier version let the failing worker retry after a grace period. On a small fleet that turned a broken worker into a failed job: it burned the task's last attempt on the same machine. A failed job is worse than a late one, so the rule became strict, with the wait limit as the bound.
+- **Visibility.** A failed job's error names the workers its task failed or expired on (§4.2). `Store.RetryExclusion` reports why a pending task is excluded for a given worker (for queue views).
 
 **Implementation**
 - All of this runs inside the claim's `BEGIN IMMEDIATE` transaction:
@@ -675,7 +683,7 @@ Confidence: high that this gives the fairness asked for. Medium on the default p
 ### 8.3 Lease timing
 
 - `heartbeat_interval` = 30 s, and `lease_ttl` = 3 × interval = 90 s. A worker is presumed gone after 3 missed heartbeats. Both values are server config and are sent to the worker in each lease.
-- The reaper runs every 10 s. It expires leases with `expires_at < now` (outcome `expired`) and requeues the task, or fails it when attempts are exhausted.
+- The reaper runs every 10 s. It expires leases with `expires_at < now` (outcome `expired`) and requeues the task for another worker, or fails it when attempts are exhausted. It then fails tasks that have waited `--retry-wait-limit` for a worker that has not already failed them (§8.2).
 - **Maximum lease age.** Heartbeats cannot keep a lease alive forever: once a lease is older than max(`--max-lease-age`, `--lease-age-factor` × the task's cost in seconds) (defaults 6 h and 4; cost is audio seconds × model factor, §8.2), heartbeats get `410` and the lease expires, counting as an attempt. This bounds a hung or misbehaving worker's hold on a task while leaving slow machines ample time.
 - **Server restart:** on startup, every live lease is extended by one `lease_ttl` before the reaper starts. Workers reconnecting within that window carry on uninterrupted.
 
@@ -706,7 +714,8 @@ If the tasks ran on different whisper.cpp versions, the header lists all of them
 | Queued jobs never processed | not purged; they stay visible on the dashboard and in `whisper_queue_oldest_pending_seconds` | — |
 | Pending workers | 7 d after registration (polling does not extend it, so a pending worker cannot hold a slot under `--max-pending-workers` indefinitely), with their grants and the grants scoped to them | `WHISPER_PENDING_WORKER_TTL` |
 | Rejected workers | 30 d after rejection, with their grants and work counters (§4.3); the `worker.prune` audit entry keeps the final counters of a worker that did any work. Until then the worker's token gets a "rejected" answer telling it to exit; afterwards the token is simply unknown | `WHISPER_REJECTED_WORKER_RETENTION` |
-| Ended leases | 30 d (debugging) | — |
+| Tasks that failed and wait for another worker | failed (with their job) after `retry_wait_limit` (default 24 h) pending with no worker taking them (§8.2) | `WHISPER_RETRY_WAIT_LIMIT` |
+| Ended leases | 30 d (debugging); never while their task is still pending or leased, since they record which workers failed it (§8.2) | — |
 | Orphan `.part` files | on startup and daily | — |
 
 Once the canonical audio is purged a job can't be retried. `GET /job/{id}` reports `media.audio_purged: true`.
@@ -777,9 +786,9 @@ Every line also carries `service="whisper-network"`, `mode` (`server`/`worker`),
 | `job.prepared` | info | server | `job_id`, `audio_s`, `tasks`, `canonical_bytes` |
 | `job.done` / `job.failed` | info / warn | server | `job_id`, `queue`, `wait_s`, `elapsed_s`, `compute_s`, `error` |
 | `job.deleted` / `job.purged` | info | server | `job_id`, `actor` / `what` |
-| `task.leased` | info | server | `job_id`, `task_seq`, `task_kind`, `lease_id`, `worker_id`, `queue`, `cost`, `vtime`; `reason` when the worker already failed this task (§8.2, retry elsewhere) |
+| `task.leased` | info | server | `job_id`, `task_seq`, `task_kind`, `lease_id`, `worker_id`, `queue`, `cost`, `vtime` |
 | `lease.expired` / `lease.released` | warn / info | server | `lease_id`, `worker_id`, `attempt` |
-| `task.done` / `task.failed` | info / warn | server + worker | `lease_id`, `compute_ms`, `audio_s`, `rtf`, `error`, `stderr_tail` (≤ 4 KiB) |
+| `task.done` / `task.failed` | info / warn | server + worker | `lease_id`, `compute_ms`, `audio_s`, `rtf`, `error`, `stderr_tail` (≤ 4 KiB); a task the reaper fails at the retry wait limit (§8.2) has no lease and carries `failed_on` (the workers) |
 | `worker.registered` / `.approved` / `.paused` / `.resumed` / `.rejected` | info | server | `worker_id`, `hostname`, `actor`, `queues` |
 | `worker.sandbox` | info / warn | worker | `sandbox_level`, `landlock_abi` |
 | `auth.denied` | warn | server | `principal`, `route`, `reason` |
@@ -886,8 +895,8 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--require-tls` | off | Refuse to start without TLS |
 | `--trust-proxy` | off | Trust `X-Forwarded-For` (rightmost entry) for rate limiting and audit; only behind a proxy that sets it |
 | `--heartbeat-interval` | 30s | Leases live 3× this |
-| `--max-attempts` | 2 | |
-| `--retry-elsewhere-grace` | 10m | A worker that failed a task or let its lease expire may lease it again only this long after; `0` disables (§8.2) |
+| `--max-attempts` | 2 | Distinct workers a task may fail on (or let its lease expire) before its job fails; a worker never gets a task it failed back (§4.2, §8.2) |
+| `--retry-wait-limit` | 24h | A task that failed and has waited this long with no other eligible worker taking it fails its job, naming the workers that failed it (§8.2) |
 | `--task-target` | 60m | |
 | `--split-window` | 60s | Search window around each split point |
 | `--class-weights` | `low=1,medium=2,high=4` | |

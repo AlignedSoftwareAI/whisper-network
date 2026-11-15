@@ -43,11 +43,13 @@ func TestReaperExpiresThenFails(t *testing.T) {
 	assert.Equal(t, "warn", exp[0]["level"])
 	assert.Equal(t, api.JobRunning, h.job(job.ID).State, "requeued, not failed")
 
-	require.NotNil(t, h.claim(wid, wtok, "", nil))
+	assert.Nil(t, h.claim(wid, wtok, "", nil), "never back to the worker it expired on")
+	w2id, w2tok := h.activeWorker(api.WorkerFacts{}, "public")
+	require.NotNil(t, h.claim(w2id, w2tok, "", nil))
 	h.clk.Advance(h.srv.leaseTTL() + time.Second)
 	h.srv.reapOnce(h.ctx)
 	j := h.job(job.ID)
-	assert.Equal(t, api.JobFailed, j.State, "two expired attempts exhaust max_attempts")
+	assert.Equal(t, api.JobFailed, j.State, "expiries on two workers exhaust max_attempts")
 	assert.Len(t, h.logs.events(t, obs.EventJobFailed), 1)
 
 	var mb = &syncBuffer{}

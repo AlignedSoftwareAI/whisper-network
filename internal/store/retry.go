@@ -1,0 +1,129 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/deweysasser/whisper-network/internal/api"
+)
+
+// StrandedTask is a task FailStranded failed: it had failed on Workers, and
+// no other eligible worker took it within the wait limit.
+type StrandedTask struct {
+	JobID   string
+	Seq     int
+	Kind    api.TaskKind
+	Workers []string
+	// Reason is the job error FailStranded recorded.
+	Reason string
+}
+
+// FailStranded fails every pending task that failed on some worker and has
+// been waiting for limit since it last went back to pending: every worker
+// that took it since then failed it, and no other eligible worker has taken
+// it (DESIGN.md §8.2). Each such task fails its job with a reason naming the
+// workers that failed it. The reaper calls it; limit must be positive.
+func (s *Store) FailStranded(ctx context.Context, limit time.Duration) ([]StrandedTask, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: retry wait limit must be positive", ErrInvalid)
+	}
+	now := s.now()
+	cutoff := toMS(now.Add(-limit))
+	var out []StrandedTask
+	err := s.write(ctx, func(tx *sql.Tx) error {
+		out = nil
+		// A pending task with attempts > 0 has a failed or expired lease
+		// (endLease sets attempts to the number of workers it failed on).
+		// It went back to pending when its last lease ended, of whatever
+		// outcome, so it has waited since then. The first subquery is
+		// served by leases_task_failures and rules out most tasks before
+		// the second, which looks at leases ended since the cutoff.
+		rows, err := tx.QueryContext(ctx, `SELECT t.job_id, t.seq, t.kind, COALESCE(t.error, '') FROM tasks t
+			WHERE t.state = 'pending' AND t.attempts > 0
+			AND (SELECT MAX(x.ended_at) FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
+				AND x.outcome IN ('failed','expired')) <= ?
+			AND NOT EXISTS (SELECT 1 FROM leases y WHERE y.job_id = t.job_id AND y.seq = t.seq
+				AND (y.ended_at IS NULL OR y.ended_at > ?))
+			ORDER BY t.job_id, t.seq`, cutoff, cutoff)
+		if err != nil {
+			return fmt.Errorf("stranded tasks: %w", err)
+		}
+		var errs []string
+		for rows.Next() {
+			var st StrandedTask
+			var e string
+			if err := rows.Scan(&st.JobID, &st.Seq, &st.Kind, &e); err != nil {
+				rows.Close()
+				return fmt.Errorf("stranded tasks: %w", err)
+			}
+			out = append(out, st)
+			errs = append(errs, e)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("stranded tasks: %w", err)
+		}
+		kept := out[:0]
+		for i, st := range out {
+			// An earlier task of the same job already failed it.
+			if i > 0 && out[i-1].JobID == st.JobID {
+				continue
+			}
+			if st.Workers, err = failedOn(ctx, tx, st.JobID, st.Seq); err != nil {
+				return err
+			}
+			st.Reason = failedAttempts(st.Kind, st.Seq, st.Workers) + "; no other eligible worker took it within " +
+				shortDuration(limit)
+			if errs[i] != "" {
+				st.Reason += ": " + errs[i]
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'failed' WHERE job_id = ? AND seq = ?`,
+				st.JobID, st.Seq); err != nil {
+				return fmt.Errorf("fail stranded task: %w", err)
+			}
+			if _, err := failJob(ctx, tx, st.JobID, st.Reason, now); err != nil {
+				return err
+			}
+			kept = append(kept, st)
+		}
+		out = kept
+		return nil
+	})
+	return out, err
+}
+
+// shortDuration formats d without trailing zero units: 24h, 90m, 1m30s.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = s[:len(s)-2]
+	}
+	return s
+}
+
+// RetryExclusion says why the retry-elsewhere rule keeps a task from a
+// worker (DESIGN.md §8.2), or returns "" if it does not: the worker failed
+// the task, or let a lease on it expire, and so is never offered it again.
+func (s *Store) RetryExclusion(ctx context.Context, jobID string, seq int, workerID string) (string, error) {
+	var outcome api.LeaseOutcome
+	err := s.r.QueryRowContext(ctx, `SELECT outcome FROM leases WHERE job_id = ? AND seq = ? AND worker_id = ?
+		AND outcome IN ('failed','expired') ORDER BY ended_at DESC, rowid DESC LIMIT 1`,
+		jobID, seq, workerID).Scan(&outcome)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("retry exclusion: %w", err)
+	case outcome == api.OutcomeExpired:
+		return "a lease on this task expired on worker " + workerID, nil
+	default:
+		return "worker " + workerID + " failed this task", nil
+	}
+}

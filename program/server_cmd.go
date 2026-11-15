@@ -43,8 +43,8 @@ type ServerCmd struct {
 	TrustProxy bool   `env:"WHISPER_TRUST_PROXY" help:"Trust X-Forwarded-For (only behind a proxy that sets it)"`
 
 	HeartbeatInterval time.Duration `default:"30s" env:"WHISPER_HEARTBEAT_INTERVAL" help:"Worker heartbeat interval; leases live 3x this"`
-	MaxAttempts       int           `default:"2" env:"WHISPER_MAX_ATTEMPTS" help:"Counted leases per task before the job fails"`
-	RetryGrace        time.Duration `name:"retry-elsewhere-grace" default:"10m" env:"WHISPER_RETRY_ELSEWHERE_GRACE" help:"Keep a task from the worker it failed on for this long, so another worker retries it; 0 disables"`
+	MaxAttempts       int           `default:"2" env:"WHISPER_MAX_ATTEMPTS" help:"Distinct workers a task may fail on (or let its lease expire) before the job fails; a worker never retries a task it failed"`
+	RetryWaitLimit    time.Duration `default:"24h" env:"WHISPER_RETRY_WAIT_LIMIT" help:"Fail a job whose failed task no other eligible worker has taken for this long"`
 	TaskTarget        time.Duration `default:"60m" env:"WHISPER_TASK_TARGET" help:"Target audio length of one transcribe task"`
 	SplitWindow       time.Duration `default:"60s" env:"WHISPER_SPLIT_WINDOW" help:"Search window around each split point"`
 	ClassWeights      string        `default:"low=1,medium=2,high=4" env:"WHISPER_CLASS_WEIGHTS" help:"Job weight-class shares"`
@@ -85,8 +85,8 @@ func (c *ServerCmd) Validate() error {
 	if c.MaxAttempts < 1 {
 		return errors.New("--max-attempts must be at least 1")
 	}
-	if c.RetryGrace < 0 {
-		return errors.New("--retry-elsewhere-grace must not be negative")
+	if c.RetryWaitLimit <= 0 {
+		return errors.New("--retry-wait-limit must be positive")
 	}
 	if c.MaxPendingSource < 1 || c.MaxUploadsEach < 1 || c.MaxAnalysesEach < 1 {
 		return errors.New("--max-pending-per-source, --max-uploads-per-principal and --max-analyses-per-principal must be at least 1")
@@ -137,7 +137,7 @@ func (c *ServerCmd) storeConfig() (store.Config, error) {
 	}
 	return store.Config{
 		Path: server.DBPath(c.Data), ClassWeights: weights, ModelFactors: factors,
-		MaxAttempts: c.MaxAttempts, RetryElsewhereGrace: c.RetryGrace,
+		MaxAttempts:       c.MaxAttempts,
 		PrepareMinSandbox: api.SandboxLevel(c.PrepareMinSandbox),
 	}, nil
 }
@@ -170,6 +170,7 @@ func (c *ServerCmd) serverConfig() (server.Config, error) {
 	cfg.MinFreeBytes = minFree
 	cfg.AudioRetention = c.AudioRetention
 	cfg.JobRetention = c.JobRetention
+	cfg.RetryWaitLimit = c.RetryWaitLimit
 	cfg.PendingWorkerTTL = c.PendingWorkerTTL
 	cfg.RejectedWorkerRetention = c.RejectedRetention
 	cfg.ReadTimeout = c.ReadTimeout

@@ -37,6 +37,7 @@ func TestExpiryRequeueAndMaxAttempts(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	w := f.worker(api.SandboxFull, f.pubID)
+	w2 := f.worker(api.SandboxFull, f.pubID)
 	j := f.job(f.pubID, "c", api.WeightMedium, 2, 10)
 
 	l1 := f.claim(w)
@@ -59,9 +60,11 @@ func TestExpiryRequeueAndMaxAttempts(t *testing.T) {
 	assert.Equal(t, "pending", state)
 	assert.Equal(t, 1, attempts)
 
-	// Second attempt also expires: max_attempts (2) reached, job fails and
-	// the sibling's lease is cancelled.
-	l3 := f.claim(w)
+	// Second attempt, on another worker (w never gets the task back), also
+	// expires: max_attempts (2) reached, job fails and the sibling's lease
+	// is cancelled.
+	assert.Nil(t, f.claim(w))
+	l3 := f.claim(w2)
 	require.Equal(t, 1, l3.Seq)
 	assert.Equal(t, 2, l3.Attempt)
 	f.clk.Advance(ttl / 2)
@@ -164,6 +167,7 @@ func TestFail(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	w := f.worker(api.SandboxFull, f.pubID)
+	w2 := f.worker(api.SandboxFull, f.pubID)
 	j1 := f.job(f.pubID, "c", api.WeightMedium, 1, 10)
 	l := f.claim(w)
 	end, err := f.s.Fail(f.ctx, l.ID, w, "whisper crashed", true)
@@ -171,8 +175,9 @@ func TestFail(t *testing.T) {
 	assert.True(t, end.Requeued)
 	assert.Equal(t, api.OutcomeFailed, end.Outcome)
 
-	l = f.claim(w)
-	end, err = f.s.Fail(f.ctx, l.ID, w, "whisper crashed", true)
+	assert.Nil(t, f.claim(w), "w never retries a task it failed")
+	l = f.claim(w2)
+	end, err = f.s.Fail(f.ctx, l.ID, w2, "whisper crashed", true)
 	require.NoError(t, err)
 	assert.True(t, end.JobFailed, "retryable but out of attempts")
 

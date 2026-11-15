@@ -138,17 +138,11 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request, p *Principa
 }
 
 func (s *Server) leased(l *store.Lease) {
-	ev := obs.Info(&s.log, obs.EventTaskLeased).Str(obs.FieldJobID, l.JobID).Int(obs.FieldTaskSeq, l.Seq).
+	obs.Info(&s.log, obs.EventTaskLeased).Str(obs.FieldJobID, l.JobID).Int(obs.FieldTaskSeq, l.Seq).
 		Str(obs.FieldTaskKind, string(l.Kind)).Str(obs.FieldLeaseID, l.ID).Str(obs.FieldWorkerID, l.WorkerID).
 		Str(obs.FieldQueue, l.QueueName).Str(obs.FieldWeight, string(l.Weight)).Float64(obs.FieldCost, l.Cost).
-		Float64(obs.FieldVTime, l.VTime).Int(obs.FieldAttempt, l.Attempt)
-	if l.SameWorkerRetry {
-		// Retry-elsewhere (DESIGN.md §8.2) let this worker have a task it
-		// already failed: say so, since a repeat failure may be the worker.
-		ev = ev.Str(obs.FieldReason, "retry on the worker that already failed this task: "+
-			"no other worker took it within the retry-elsewhere grace")
-	}
-	ev.Msg("task leased")
+		Float64(obs.FieldVTime, l.VTime).Int(obs.FieldAttempt, l.Attempt).
+		Msg("task leased")
 	s.metrics.ServedCost(l.QueueName, l.Weight, l.Cost)
 }
 
@@ -197,8 +191,8 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, p *Prin
 
 const maxReasonLen = 1000
 
-// handleFailure ends a lease as failed; the task requeues if retryable and
-// attempts remain, otherwise the job fails.
+// handleFailure ends a lease as failed; the task requeues for another worker
+// if retryable and attempts remain, otherwise the job fails.
 func (s *Server) handleFailure(w http.ResponseWriter, r *http.Request, p *Principal) error {
 	var rep api.FailureReport
 	if err := decodeWorkerJSON(w, r, &rep, false, 64<<10); err != nil {
