@@ -8,6 +8,11 @@ name: Build
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the older, now-superseded run.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REPO: ${{github.repository}}
   STATICCHECK_VERSION: 2026.2.2
