@@ -99,6 +99,7 @@ func TestServerCmdValidation(t *testing.T) {
 // TestPrepareDataDir: the data directory is created private, and an
 // existing permissive one is tightened.
 func TestPrepareDataDir(t *testing.T) {
+	skipOnWindows(t, "POSIX directory modes")
 	fresh := filepath.Join(t.TempDir(), "data")
 	require.NoError(t, prepareDataDir(fresh, zerolog.Nop()))
 	fi, err := os.Stat(fresh)
@@ -117,6 +118,7 @@ func TestPrepareDataDir(t *testing.T) {
 // create the data directory, makes it as private as the server does, and
 // blobs the server writes there are owner-only.
 func TestAdminDataDirIsPrivate(t *testing.T) {
+	skipOnWindows(t, "POSIX directory modes")
 	data := filepath.Join(t.TempDir(), "data")
 	opts, err := parse(t, "admin", "list-workers", "--data", data)
 	require.NoError(t, err)

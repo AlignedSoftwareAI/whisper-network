@@ -45,6 +45,7 @@ func pinnedModel(name string, data []byte) models.Model {
 }
 
 func TestBenchWithSyntheticAudio(t *testing.T) {
+	skipOnWindows(t, "bench runs whisper-cli through the worker's tooling")
 	fakes := workertest.InstallFakes(t)
 	c, out := benchCmd(t, "--model", "bench.test", "--threads", "1,2", "--whisper-cli", fakes.WhisperCLI)
 	require.NoError(t, c.Run(context.Background()))
@@ -58,6 +59,7 @@ func TestBenchWithSyntheticAudio(t *testing.T) {
 }
 
 func TestBenchRejectsTamperedModel(t *testing.T) {
+	skipOnWindows(t, "bench runs whisper-cli through the worker's tooling")
 	fakes := workertest.InstallFakes(t)
 	c, _ := benchCmd(t, "--model", "bench.test", "--whisper-cli", fakes.WhisperCLI)
 	c.fetch = func(context.Context, models.Model) (io.ReadCloser, error) {
@@ -74,6 +76,7 @@ func TestBenchNeedsWhisperCLI(t *testing.T) {
 }
 
 func TestBenchAudioFile(t *testing.T) {
+	skipOnWindows(t, "bench runs whisper-cli through the worker's tooling")
 	fakes := workertest.InstallFakes(t)
 	wav := filepath.Join(t.TempDir(), "clip.wav")
 	require.NoError(t, os.WriteFile(wav, workertest.WAV(2), 0o600))

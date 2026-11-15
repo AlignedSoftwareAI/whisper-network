@@ -24,6 +24,7 @@ import (
 // zerolog's global field names (AfterApply), which the in-process server
 // and worker read on every log line. A real process parses once, first.
 func TestCLIAgainstRealServer(t *testing.T) {
+	skipOnWindows(t, "runs a real worker")
 	ctx := context.Background()
 	media := filepath.Join(t.TempDir(), "meeting.wav")
 	require.NoError(t, os.WriteFile(media, e2etest.SpeechWAV(3), 0o600))

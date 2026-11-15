@@ -8,6 +8,7 @@ import (
 )
 
 func TestWorkerCmdFlags(t *testing.T) {
+	skipOnWindows(t, "the worker is unsupported")
 	var opts Options
 	_, err := opts.Parse([]string{"worker", "--server", "https://wn.example", "--memory-reserve", "512MiB",
 		"--memory", "6g", "--kinds", "transcribe", "--slots", "2", "--drain"})

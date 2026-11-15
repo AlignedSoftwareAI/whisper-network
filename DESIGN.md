@@ -539,6 +539,7 @@ Confidence that this holds across the fleet's kernels: medium-high for kernels w
 
 - Container images: `linux/amd64` and `linux/arm64`, with whisper.cpp built for the CPU baseline. AVX2/NEON dispatch is done by ggml at runtime.
 - **macOS:** Docker on Apple Silicon has no Metal, which costs a large factor. The worker therefore also ships as a native darwin/arm64 binary and finds `whisper-cli`/`ffmpeg` on `$PATH` (Homebrew). There is no Landlock on macOS, so `sandbox_level: none` and macOS workers get no prepare tasks under the default policy. That suits them, since they are best spent on transcription.
+- **Windows:** the worker is not supported and refuses to start: there is no confinement for its child processes (issue #26). The server and client CLI build for Windows.
 - **GPU** workers are out of scope for v1. The slot model generalizes to them (one slot per GPU, a different `peak_rss` budget), so nothing in the API blocks it.
 
 ---

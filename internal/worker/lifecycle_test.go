@@ -180,14 +180,17 @@ func TestNothingToOfferFails(t *testing.T) {
 	_, done := h.run()
 	assert.ErrorContains(t, waitDone(t, done), "nothing to offer")
 
+	// Without /proc/meminfo the worker cannot size itself and must ask for
+	// --memory. Platforms that report memory another way (sysctl on macOS)
+	// start normally instead, so this half applies only where they don't.
+	if platformMemory() != 0 {
+		return
+	}
 	h = newHarness(t)
 	h.cfg.Memory = 0
 	h.cfg.SysRoot = fakeRootWithout("proc/meminfo")
 	_, done = h.run()
-	err := waitDone(t, done)
-	if platformMemory() == 0 {
-		assert.ErrorContains(t, err, "--memory")
-	}
+	assert.ErrorContains(t, waitDone(t, done), "--memory")
 }
 
 func TestSandboxProbeFailureReportsNone(t *testing.T) {

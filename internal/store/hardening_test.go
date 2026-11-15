@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,9 @@ import (
 // world-readable database is tightened on open.
 func TestDatabaseFilesArePrivate(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on Windows")
+	}
 	f := newFixture(t)
 	f.worker(api.SandboxFull) // a write, so the WAL files exist
 	for _, p := range []string{f.path, f.path + "-wal", f.path + "-shm"} {

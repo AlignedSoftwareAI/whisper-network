@@ -66,9 +66,7 @@ func TestPreparePath(t *testing.T) {
 	// A full-sandbox worker (the real probe on this machine) prepares both.
 	strong := e.StartWorker("strong")
 	strongID := strong.ID()
-	if lvl := e.WorkerByDescription("strong").Facts.SandboxLevel; lvl != api.SandboxFull {
-		t.Skipf("this kernel's sandbox level is %s, below the default prepare policy", lvl)
-	}
+	requirePrepareSandbox(t, e, "strong")
 	e.Approve(strongID, "public")
 	for _, j := range []*api.Job{stereo, mp4} {
 		done := e.WaitJob(j.ID, api.JobDone)
@@ -86,12 +84,24 @@ func TestPreparePath(t *testing.T) {
 	require.NotEmpty(t, e.Logs.Events(t, obs.EventJobPrepared))
 }
 
+// requirePrepareSandbox skips a test that needs a prepare task when this
+// platform's worker sandbox is below the default prepare policy (macOS and
+// Windows have no Landlock). Such a worker is correctly never given prepare
+// tasks, so the test would only wait for work that never comes.
+func requirePrepareSandbox(t *testing.T, e *e2etest.Env, description string) {
+	t.Helper()
+	if lvl := e.WorkerByDescription(description).Facts.SandboxLevel; lvl != api.SandboxFull {
+		t.Skipf("this platform's sandbox level is %s, below the default prepare policy", lvl)
+	}
+}
+
 // TestPrepareFailureSurfaces: ffmpeg blaming the input is not retried; the
 // job fails with ffmpeg's reason in GET /job.
 func TestPrepareFailureSurfaces(t *testing.T) {
 	t.Parallel()
 	e := e2etest.New(t)
 	w := e.StartWorker("w", e2etest.ChildEnv(workertest.FFmpegMode(workertest.ModeInvalid)))
+	requirePrepareSandbox(t, e, "w")
 	e.Approve(w.ID(), "public")
 	sub := e.Submitter("public")
 	j := e.Submit(sub, "public", api.JobParams{}, e2etest.MP4Like(4096))
@@ -112,6 +122,7 @@ func TestInterruptedInputDownloadsResume(t *testing.T) {
 	t.Parallel()
 	e := e2etest.New(t)
 	w := e.StartWorker("flaky-net")
+	requirePrepareSandbox(t, e, "flaky-net")
 	w.Net.CutBodyOnce("/input", 50000)
 	e.Approve(w.ID(), "public")
 	sub := e.Submitter("public")

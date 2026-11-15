@@ -101,105 +101,18 @@ jobs:
         draft: ${{ steps.rc-check.outputs.is_rc == 'true' }}
         prerelease: ${{ steps.rc-check.outputs.is_rc == 'true' }}
 
+  # Release images (including latest/stable) are published only after the
+  # release's tests pass. They are rebuilt rather than promoted from the main
+  # build so the binaries report the release version; the native runners and
+  # the default branch's build cache keep this fast.
   docker-build:
-    runs-on: ubuntu-latest
-    name: Build and push the release images
-    # Release images (including latest/stable) are published only after the
-    # release's tests pass.
+    name: Release images
     needs: build
     permissions:
       contents: read
       packages: write
-    env:
-      REF_NAME: ${{ github.ref_name }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
-
-      - name: Compute image names, tags and build arguments
-        run: |
-          {
-            echo "TAG=${REF_NAME//\//-}"
-            echo "IMAGE=ghcr.io/${REPO,,}"
-            echo "GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')"
-            echo "VERSION=$(./utils/version.sh)"
-          } >> "$GITHUB_ENV"
-
-      - name: Choose tags
-        id: tags
-        run: |
-          tag="${REF_NAME//\//-}"
-          image="ghcr.io/${REPO,,}"
-          worker="${image}:${tag}"
-          server="${image}:${tag}-server"
-          # Only tags without a pre-release suffix (e.g. not v1.2.0-rc.1)
-          # move `latest` and `stable`, so release candidates never reach
-          # users who follow those tags.
-          if [[ "$REF_NAME" != *-* ]]; then
-            worker="${worker},${image}:latest,${image}:stable"
-            server="${server},${image}:latest-server,${image}:stable-server"
-          fi
-          echo "worker=${worker}" >> "$GITHUB_OUTPUT"
-          echo "server=${server}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push worker image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          target: worker
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.worker }}
-          build-args: |
-            GO_VERSION=${{ env.GO_VERSION }}
-            VERSION=${{ env.VERSION }}
-          cache-from: type=gha,scope=worker
-          cache-to: type=gha,mode=max,scope=worker
-
-      - name: Build and push server image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          target: server
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.server }}
-          build-args: |
-            GO_VERSION=${{ env.GO_VERSION }}
-            VERSION=${{ env.VERSION }}
-          cache-from: type=gha,scope=server
-          cache-to: type=gha,mode=max,scope=server
-
-# uncomment this if you're also using docker hub
-#      - name: Login to Docker Container Registry
-#        if: ${{ secrets.DOCKERHUB_TOKEN }}
-#        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-#        with:
-#          registry: ghcr.io
-#          username: ${{ github.repository_owner }}
-#          password: ${{ secrets.GITHUB_TOKEN }}
-#
-#      - name: Docker Release to Docker Hub
-#        if: ${{ secrets.DOCKERHUB_TOKEN }}
-#        uses: docker/build-push-action@v2
-#        with:
-#          context: .
-#          push: true
-#          tags: |
-#            ${{env.REPO}}:latest
-#            ${{env.REPO}}:${{github.ref_name}}
+    uses: ./.github/workflows/images.yaml
+    with:
+      push: true
+      tag: ${{ github.ref_name }}
+      release: true
