@@ -98,10 +98,13 @@ them with `whisper-network bench`), and update the default `--models` and
 `--model-factors` only if the default set changes. Mention the change in
 DESIGN.md if it affects defaults.
 
-**whisper.cpp.** The version is the `WHISPER_VERSION` build argument in the
-`Dockerfile`. To bump it:
+**whisper.cpp.** The version is the `WHISPER_RELEASE` build argument in the
+`Dockerfile` (without the leading `v`; `WHISPER_VERSION`, the git tag, is
+derived from it). The worker image reports this release in transcript
+provenance, because the tagged source itself reports `<release>-dev`. To bump
+it:
 
-1. Change `WHISPER_VERSION` to the new release tag.
+1. Change `WHISPER_RELEASE` to the new release (e.g. `1.9.6`).
 2. `make image` and confirm `whisper-cli --version` works in the image.
 3. Run `whisper-network bench` and `make integration` with the new image.
 4. Check that the model table and the `whisper-cli` flags the worker passes
@@ -109,7 +112,7 @@ DESIGN.md if it affects defaults.
 
 The Dockerfile pins its base images by digest, and `WHISPER_COMMIT` must be the
 commit the release tag points to (the build fails if the tag has moved). When
-bumping `WHISPER_VERSION`, also update `WHISPER_COMMIT`:
+bumping `WHISPER_RELEASE`, also update `WHISPER_COMMIT`:
 `gh api repos/ggml-org/whisper.cpp/git/ref/tags/<tag>` (dereference annotated tags).
 
 GitHub Actions in `.github/workflows` are pinned to full commit SHAs with a
