@@ -40,7 +40,7 @@
     <a href="/ui/workers/{{.ID}}" title="{{.ID}}">{{.Name}}</a>
     {{- with .Hostname}}<div class="muted small">{{.}}</div>{{end}}
   </td>
-  <td><span class="badge state-{{.State}}">{{.State}}</span></td>
+  <td><span class="badge state-{{.State}}">{{.State}}</span>{{with .PauseReason}} <span class="badge auto-paused" title="Paused by the circuit breaker: {{.}}">auto</span>{{end}}</td>
   <td>{{range .Queues}}<span class="chip">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</td>
   <td><span class="badge sandbox-{{.Sandbox}}">{{.Sandbox}}</span></td>
   <td class="n" title="busy / total, from the last heartbeat">{{with .SlotsBusy}}{{.}}{{else}}–{{end}}/{{.Slots}}</td>

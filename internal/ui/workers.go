@@ -43,6 +43,10 @@ type workerRow struct {
 	LastSeenAt *time.Time
 	Online     bool
 	Stats      workStats // work counters; the table shows a summary, the page all
+	// PauseReason is why the circuit breaker paused the worker (empty if
+	// it did not); FailureStreak and StreakJobs are its current streak.
+	PauseReason               string
+	FailureStreak, StreakJobs int
 
 	// Compact controls, each shown only when the principal may use it.
 	CanApprove          bool // links to the detail page's approve form
@@ -226,7 +230,8 @@ func (u *UI) workerRowFor(rc *reqCtx, wk *store.Worker, process []api.Grant) wor
 	res := auth.Resource{WorkerID: wk.ID}
 	row := workerRow{CSRF: rc.CSRF, ID: wk.ID, Name: workerName(wk), State: wk.State,
 		Sandbox: wk.Facts.SandboxLevel, Slots: wk.Facts.Slots, LastSeenAt: wk.LastSeenAt,
-		Online: isOnline(wk, u.srv.Now()), Stats: newWorkStats(wk.Stats)}
+		Online: isOnline(wk, u.srv.Now()), Stats: newWorkStats(wk.Stats), PauseReason: wk.PauseReason,
+		FailureStreak: wk.FailureStreak, StreakJobs: wk.StreakJobs}
 	if row.Name == wk.Facts.Description && wk.Facts.Hostname != row.Name {
 		row.Hostname = wk.Facts.Hostname
 	}

@@ -103,6 +103,12 @@ type env struct {
 
 func newEnv(t *testing.T, opts ...func(*server.Config)) *env {
 	t.Helper()
+	return newEnvStore(t, store.Config{}, opts...)
+}
+
+// newEnvStore is newEnv with store settings (Path and Now are filled in).
+func newEnvStore(t *testing.T, sc store.Config, opts ...func(*server.Config)) *env {
+	t.Helper()
 	e := &env{t: t, ctx: t.Context(), clk: &fakeClock{t: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 		logs: &syncBuffer{}}
 	dir := t.TempDir()
@@ -114,7 +120,8 @@ func newEnv(t *testing.T, opts ...func(*server.Config)) *env {
 		o(&cfg)
 	}
 	var err error
-	e.st, err = store.Open(e.ctx, store.Config{Path: filepath.Join(dir, "wn.db"), Now: e.clk.Now})
+	sc.Path, sc.Now = filepath.Join(dir, "wn.db"), e.clk.Now
+	e.st, err = store.Open(e.ctx, sc)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.st.Close() })
 	_, err = server.Bootstrap(e.ctx, e.st, bootstrapPassword, cfg.PasswordParams, io.Discard)

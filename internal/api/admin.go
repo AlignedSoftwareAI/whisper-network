@@ -17,6 +17,14 @@ type WorkerSummary struct {
 	Gauges       *Gauges    `json:"gauges,omitempty"`
 	// Stats is what the worker has done. Servers before it was added omit it.
 	Stats *WorkerStats `json:"stats,omitempty"`
+	// FailureStreak is the worker's failed (retryable) and expired leases
+	// since its last completed task or resume, in FailureStreakJobs distinct
+	// jobs: the circuit breaker's input (DESIGN.md §4.2).
+	FailureStreak     int `json:"failure_streak"`
+	FailureStreakJobs int `json:"failure_streak_jobs"`
+	// PauseReason is set while the worker is paused because the server's
+	// circuit breaker paused it, e.g. "3 consecutive failures across 2 jobs".
+	PauseReason string `json:"pause_reason,omitempty"`
 }
 
 // WorkerStats are a worker's durable work counters. Completed tasks count

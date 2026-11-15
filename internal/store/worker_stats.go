@@ -55,7 +55,7 @@ func bumpWorkerStats(ctx context.Context, tx *sql.Tx, workerID string, d statsDe
 }
 
 // countCompletion counts the task of l, just marked done by its worker with
-// computeMS, in the worker's counters.
+// computeMS, in the worker's counters, and ends the worker's failure streak.
 //
 // The job counts if no other task of the job is done by this worker. Done
 // tasks never change state or worker again and are deleted only with their
@@ -80,6 +80,9 @@ func countCompletion(ctx context.Context, tx *sql.Tx, l leaseRow, computeMS int6
 	case api.KindTranscribe:
 		d.transcribe, d.transcribeMS = 1, computeMS
 		d.audioMS = span * 1000 / canonicalSampleRate
+	}
+	if err := clearFailureStreak(ctx, tx, l.WorkerID); err != nil {
+		return err
 	}
 	return bumpWorkerStats(ctx, tx, l.WorkerID, d)
 }

@@ -54,6 +54,7 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	assert.InDelta(t, 4.0, cfg.LeaseAgeFactor, 0)
 	scfg, err := c.storeConfig()
 	require.NoError(t, err)
+	assert.Equal(t, 3, scfg.WorkerFailureLimit, "the worker circuit breaker is on by default")
 	assert.Equal(t, 2, scfg.MaxAttempts)
 	w, mf, err := c.storeTuning()
 	require.NoError(t, err)
@@ -88,6 +89,7 @@ func TestServerCmdValidation(t *testing.T) {
 		"negative age factor":  {"--lease-age-factor", "-1"},
 		"zero retry wait":      {"--retry-wait-limit", "0s"},
 		"removed retry grace":  {"--retry-elsewhere-grace", "10m"},
+		"negative fail limit":  {"--worker-failure-limit", "-1"},
 	} {
 		_, err := parse(t, append([]string{"server"}, args...)...)
 		assert.Error(t, err, name)

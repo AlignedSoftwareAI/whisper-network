@@ -245,6 +245,15 @@ queue's media (`queue_admin` on every chosen queue). States are `pending`,
 `active`, `paused` (finishes running leases, takes no new ones) and `rejected`
 (token revoked, terminal). There are no enrollment tokens.
 
+**Circuit breaker.** A worker that keeps failing is paused automatically: after
+`--worker-failure-limit` (default 3) failed or expired leases in a row, spanning
+at least two jobs, the server pauses it, audits the pause with the actor
+`system` and the reason, logs `worker.auto_paused`, and sets
+`whisper_worker_auto_paused`. A completed task resets the streak. Failures
+caused by the input (ffmpeg rejecting an upload) do not count, and the two-job
+rule keeps one bad upload from pausing healthy workers. The Workers page shows
+the reason; resuming the worker clears it. `0` disables the breaker.
+
 **Sandbox levels.** Every ffmpeg and whisper-cli child runs under
 `whisper-network sandbox-exec`, which applies lowest CPU and I/O priority,
 `no_new_privs`, resource limits and Landlock filesystem rules, and (kernel 6.7
@@ -338,6 +347,7 @@ for the authoritative list.
 | `--heartbeat-interval` | `30s` | `WHISPER_HEARTBEAT_INTERVAL` | Worker heartbeat interval; leases live 3x this |
 | `--max-attempts` | `2` | `WHISPER_MAX_ATTEMPTS` | Distinct workers a task may fail on (or let its lease expire) before the job fails; a worker never retries a task it failed |
 | `--retry-wait-limit` | `24h` | `WHISPER_RETRY_WAIT_LIMIT` | Fail a job whose failed task no other eligible worker has taken for this long |
+| `--worker-failure-limit` | `3` | `WHISPER_WORKER_FAILURE_LIMIT` | Pause a worker after this many failed or expired leases in a row, spanning at least 2 jobs; `0` disables |
 | `--task-target` | `60m` | `WHISPER_TASK_TARGET` | Target audio length of one transcribe task |
 | `--split-window` | `60s` | `WHISPER_SPLIT_WINDOW` | Search window around each split point |
 | `--class-weights` | `low=1,medium=2,high=4` | `WHISPER_CLASS_WEIGHTS` | Job weight-class shares |
@@ -473,9 +483,10 @@ the raw path.
 ### Alerts
 
 [deploy/alerts.yml](deploy/alerts.yml) holds vmalert/Prometheus rules: server
-not scraped, queue stalled, lease churn, worker vanished, low disk (server data
-directory and worker state directories), and pending tasks with no eligible
-worker. Load it into vmalert or Prometheus as-is.
+not scraped, queue stalled, lease churn, worker vanished, worker auto-paused by
+the circuit breaker, low disk (server data directory and worker state
+directories), and pending tasks with no eligible worker. Load it into vmalert
+or Prometheus as-is.
 
 ### Health
 

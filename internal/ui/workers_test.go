@@ -306,3 +306,52 @@ func TestWorkersPageStats(t *testing.T) {
 	assert.Contains(t, body, `<dt>Failures</dt><dd>0 failed, 0 expired</dd>`)
 	assert.Contains(t, body, `<dt>Last task</dt><dd><span class="muted">never</span></dd>`)
 }
+
+// TestWorkersPageAutoPaused: a worker paused by the circuit breaker is
+// marked as such in the table, and with the reason and its failure streak
+// on its page; resuming it clears both.
+func TestWorkersPageAutoPaused(t *testing.T) {
+	t.Parallel()
+	e := newEnvStore(t, store.Config{WorkerFailureLimit: 2})
+	e.user("root", api.Grant{Role: api.RoleAdmin, Scope: "*"})
+	client := e.client(api.Grant{Role: api.RoleSubmit, Scope: auth.QueueScope("public")})
+	e.submit(client, "public", "one")
+	e.submit(client, "public", "two")
+	wid, wtok := e.worker("flaky", "")
+	require.NoError(t, e.srv.Ops().ApproveWorker(e.ctx, server.CLIActor(), wid, []string{"public"}))
+	for range 2 {
+		status, b := e.api("POST", "/worker/"+wid+"/leases", wtok,
+			api.ClaimRequest{Kinds: []api.TaskKind{api.KindTranscribe}, Models: []string{"small.en"}})
+		require.Equal(t, http.StatusCreated, status, string(b))
+		var l api.Lease
+		require.NoError(t, json.Unmarshal(b, &l))
+		status, b = e.api("POST", "/lease/"+l.ID+"/failure", wtok, api.FailureReport{Reason: "crash", Retryable: true})
+		require.Equal(t, http.StatusNoContent, status, string(b))
+	}
+
+	b := e.login("root")
+	resp, body := b.get("/ui/workers")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body = regexp.MustCompile(`\s+`).ReplaceAllString(body, " ")
+	assert.Contains(t, body, `<span class="badge state-paused">paused</span> <span class="badge auto-paused" title="Paused by the circuit breaker: 2 consecutive failures across 2 jobs">auto</span>`)
+
+	resp, body = b.get("/ui/workers/" + wid)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body = regexp.MustCompile(`\s+`).ReplaceAllString(body, " ")
+	for _, want := range []string{
+		`<span class="badge auto-paused">auto-paused</span>`,
+		`Paused automatically by the circuit breaker: 2 consecutive failures across 2 jobs.`,
+		`<span class="streak">failure streak 2 in 2 jobs</span>`,
+		`<dt>Decided by</dt><dd>system `,
+	} {
+		assert.Contains(t, body, want)
+	}
+
+	resp, _ = b.post("/ui/workers/"+wid+"/resume", nil)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	_, body = b.get("/ui/workers")
+	assert.NotContains(t, body, "auto-paused")
+	_, body = b.get("/ui/workers/" + wid)
+	assert.NotContains(t, body, "auto-paused")
+	assert.NotContains(t, body, "failure streak")
+}
