@@ -56,9 +56,8 @@ func extBody(sub uint16, validBits uint16) []byte {
 }
 
 var (
-	goodFmt  = ck("fmt ", fmtBody(1, 1, 16000, 16))
-	pcm100   = ck("data", make([]byte, 200))
-	oddChunk = ck("junk", []byte{1, 2, 3})
+	goodFmt = ck("fmt ", fmtBody(1, 1, 16000, 16))
+	pcm100  = ck("data", make([]byte, 200))
 )
 
 func TestOpenWAV(t *testing.T) {

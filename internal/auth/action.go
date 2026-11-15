@@ -5,7 +5,7 @@ type Action int
 
 // The actions. Zero is deliberately invalid so an unset Action is denied.
 const (
-	actionInvalid Action = iota
+	_ Action = iota // zero is reserved as invalid
 
 	// ActSubmitJob creates a job on Resource.Queue.
 	ActSubmitJob

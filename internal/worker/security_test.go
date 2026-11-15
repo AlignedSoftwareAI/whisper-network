@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -286,9 +287,18 @@ func TestToolReadOnly(t *testing.T) {
 		if _, err := os.Stat("/usr/bin/env"); err != nil {
 			t.Skip("no /usr/bin/env")
 		}
+		// /usr/bin/env may itself be a symlink (e.g. to a coreutils
+		// multicall binary); then the real binary is granted as well.
+		want := []string{"/usr/bin/env"}
+		if real, err := filepath.EvalSymlinks("/usr/bin/env"); err == nil && real != "/usr/bin/env" {
+			want = []string{real, "/usr/bin/env"}
+			if d := filepath.Dir(real); !strings.HasPrefix(d, "/usr/") && !strings.HasPrefix(d, "/lib") {
+				t.Skip("env resolves outside system dirs on this host")
+			}
+		}
 		ro, err := toolReadOnly("/usr/bin/env", state, home)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"/usr/bin/env"}, ro)
+		assert.Equal(t, want, ro)
 	})
 	t.Run("tool under home is refused", func(t *testing.T) {
 		_, err := toolReadOnly(touch(filepath.Join(home, "bin", "ffmpeg")), state, home)
