@@ -1,12 +1,12 @@
 //go:build !windows
 
-package server
+package diskfree
 
 import "golang.org/x/sys/unix"
 
-// FreeBytes returns the space available to unprivileged users on the
+// Free returns the space available to unprivileged users on the
 // filesystem holding path.
-func FreeBytes(path string) (int64, error) {
+func Free(path string) (int64, error) {
 	var st unix.Statfs_t
 	if err := unix.Statfs(path, &st); err != nil {
 		return 0, err
