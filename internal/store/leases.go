@@ -112,7 +112,8 @@ func (s *Store) checkLive(l leaseRow, now time.Time) error {
 	return nil
 }
 
-// endLease ends a live lease with outcome and disposes of its task:
+// endLease ends a live lease with outcome, counts it in its worker's
+// counters (failed and expired only), and disposes of its task:
 //   - consume = false refunds the attempt the lease was charged (release,
 //     worker rejection);
 //   - the task requeues if retryable and its counted attempts are below
@@ -129,6 +130,9 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 		return nil, fmt.Errorf("end lease %s: %w", l.ID, err)
 	}
 	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return nil, err
+	}
+	if err := countLeaseEnd(ctx, tx, l.WorkerID, outcome); err != nil {
 		return nil, err
 	}
 	end := &LeaseEnd{LeaseID: l.ID, JobID: l.JobID, Seq: l.Seq, Kind: l.Kind, WorkerID: l.WorkerID,
@@ -275,6 +279,9 @@ func (s *Store) CompleteTranscribe(ctx context.Context, leaseID, workerID string
 		if err := mustAffect(res, err, "complete task"); err != nil {
 			return err
 		}
+		if err := countCompletion(ctx, tx, l, c.ComputeMS, now); err != nil {
+			return err
+		}
 		if err := finishLease(ctx, tx, l, now); err != nil {
 			return err
 		}
@@ -349,6 +356,9 @@ func (s *Store) AcceptPrepare(ctx context.Context, leaseID, workerID string, p P
 			worker_id = ? WHERE job_id = ? AND seq = ? AND state = 'leased'`,
 			p.FFmpegVersion, p.ComputeMS, workerID, l.JobID, l.Seq)
 		if err := mustAffect(res, err, "complete prepare task"); err != nil {
+			return err
+		}
+		if err := countCompletion(ctx, tx, l, p.ComputeMS, now); err != nil {
 			return err
 		}
 		if err := finishLease(ctx, tx, l, now); err != nil {

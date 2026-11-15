@@ -265,21 +265,27 @@ func (o *Ops) PrunePendingWorkers(ctx context.Context, cutoff time.Time) (int64,
 }
 
 // PruneRejectedWorkers deletes workers rejected before cutoff, with their
-// grants and the grants scoped to them, recording one worker.prune entry
-// per worker by the system. It returns how many were deleted.
+// grants, the grants scoped to them and their work counters, recording one
+// worker.prune entry per worker by the system. The entry keeps the final
+// counters of a worker that did any work, since they are gone afterwards.
+// It returns how many were deleted.
 func (o *Ops) PruneRejectedWorkers(ctx context.Context, cutoff time.Time) (int64, error) {
-	var ids []string
+	var ws []store.PrunedWorker
 	_, err := o.commit(ctx, SystemActor(), func(tx *store.Tx, rec recorder) error {
 		var err error
-		if ids, err = tx.DeleteRejectedWorkers(ctx, cutoff); err != nil {
+		if ws, err = tx.DeleteRejectedWorkers(ctx, cutoff); err != nil {
 			return err
 		}
-		for _, id := range ids {
-			if err := rec("worker.prune", store.WorkerPrincipal(id), map[string]any{"state": api.WorkerRejected}); err != nil {
+		for _, w := range ws {
+			detail := map[string]any{"state": api.WorkerRejected}
+			if w.Stats.TasksDone()+w.Stats.Failures+w.Stats.ExpiredLeases > 0 {
+				detail["stats"] = w.Stats
+			}
+			if err := rec("worker.prune", store.WorkerPrincipal(w.ID), detail); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	return int64(len(ids)), err
+	return int64(len(ws)), err
 }

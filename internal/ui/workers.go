@@ -32,6 +32,7 @@ type workerView struct {
 	Online       bool
 	Gauges       *api.Gauges
 	Queues       []workerQueue
+	Stats        workStats
 
 	// Controls, each shown only when the principal may use it.
 	CanApprove          bool     // lifecycle half (worker_admin)
@@ -39,6 +40,23 @@ type workerView struct {
 	CanPause, CanResume bool
 	CanReject           bool
 	AddQueues           []string // further queues grantable to an active worker
+}
+
+// workStats is a worker's counters with the figures the page derives
+// from them.
+type workStats struct {
+	api.WorkerStats
+	TasksDone   int64
+	AudioHours  float64
+	RTF         float64 // audio seconds per compute second; 0 if none
+	FailurePct  float64 // failed and expired leases, of counted outcomes
+	ComputeTime time.Duration
+}
+
+func newWorkStats(s api.WorkerStats) workStats {
+	return workStats{WorkerStats: s, TasksDone: s.TasksDone(), AudioHours: s.AudioS / 3600,
+		RTF: s.RealtimeFactor(), FailurePct: 100 * s.FailureRate(),
+		ComputeTime: time.Duration(s.ComputeS * float64(time.Second))}
 }
 
 // workerQueue is a queue a worker may process.
@@ -103,7 +121,8 @@ func (u *UI) workerView(ctx context.Context, rc *reqCtx, wk *store.Worker, queue
 	now := u.srv.Now()
 	res := auth.Resource{WorkerID: wk.ID}
 	v := &workerView{CSRF: rc.CSRF, ID: wk.ID, State: wk.State, Facts: wk.Facts, RegisteredAt: wk.RegisteredAt,
-		DecidedBy: wk.DecidedBy, DecidedAt: wk.DecidedAt, LastSeenAt: wk.LastSeenAt, Online: isOnline(wk, now)}
+		DecidedBy: wk.DecidedBy, DecidedAt: wk.DecidedAt, LastSeenAt: wk.LastSeenAt, Online: isOnline(wk, now),
+		Stats: newWorkStats(wk.Stats)}
 	if len(wk.Gauges) > 0 {
 		var g api.Gauges
 		if json.Unmarshal(wk.Gauges, &g) == nil {

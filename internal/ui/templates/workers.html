@@ -1,5 +1,27 @@
 {{define "content"}}
 <h1>Workers</h1>
+{{with .Data.Workers}}
+<section class="card">
+  <div class="scroll">
+  <table class="data worker-stats">
+    <thead><tr><th>Worker</th><th>State</th><th class="n">Tasks done</th><th class="n">Audio hours</th><th class="n" title="Average realtime factor: audio seconds transcribed per compute second">Avg RTF</th><th class="n" title="Failed and expired leases, of completed, failed and expired">Failure rate</th><th>Last task</th></tr></thead>
+    <tbody>
+    {{range .}}
+    <tr>
+      <td><a href="#w-{{.ID}}">{{.Facts.Hostname}}</a></td>
+      <td><span class="badge state-{{.State}}">{{.State}}</span></td>
+      <td class="n" title="{{.Stats.PrepareTasks}} prepare · {{.Stats.TranscribeTasks}} transcribe · {{.Stats.Jobs}} jobs">{{.Stats.TasksDone}}</td>
+      <td class="n">{{hours .Stats.AudioHours}}</td>
+      <td class="n">{{if .Stats.RTF}}{{num .Stats.RTF}}×{{else}}—{{end}}</td>
+      <td class="n" title="{{.Stats.Failures}} failed · {{.Stats.ExpiredLeases}} expired">{{if or .Stats.TasksDone .Stats.Failures .Stats.ExpiredLeases}}{{pct .Stats.FailurePct}}{{else}}—{{end}}</td>
+      <td>{{if .Stats.LastTaskAt}}{{ago .Stats.LastTaskAt}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+{{end}}
 {{range .Data.Workers}}{{template "worker" .}}{{else}}<p class="muted">No workers are registered, or none you may manage.</p>{{end}}
 {{end}}
 
@@ -22,6 +44,11 @@
     <dt>Registered</dt><dd>{{when .RegisteredAt}}</dd>
     <dt>Last seen</dt><dd>{{ago .LastSeenAt}}</dd>
     {{with .DecidedBy}}<dt>Decided by</dt><dd>{{.}}</dd>{{end}}
+    <dt>Work</dt>
+    <dd class="work">{{with .Stats}}{{.TasksDone}} tasks ({{.PrepareTasks}} prepare, {{.TranscribeTasks}} transcribe) in {{.Jobs}} jobs
+      · {{hours .AudioHours}} h audio · {{dur .ComputeTime}} compute{{if .RTF}} · {{num .RTF}}× realtime{{end}}
+      · {{.Failures}} failed, {{.ExpiredLeases}} expired{{if .FirstTaskAt}}
+      · first task {{whenp .FirstTaskAt}}, last {{whenp .LastTaskAt}}{{end}}{{end}}</dd>
     <dt>Queues</dt>
     <dd>
       {{range .Queues}}

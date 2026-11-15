@@ -21,6 +21,8 @@ type Worker struct {
 	LastSeenAt   *time.Time
 	// Gauges is the JSON of the latest heartbeat gauges, nil if none.
 	Gauges json.RawMessage
+	// Stats are the worker's work counters (zero if it has done nothing).
+	Stats api.WorkerStats
 }
 
 // Principal returns the worker's grant principal.
@@ -82,9 +84,11 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
-const workerCols = `id, state, hostname, description, cpu_model, cores, mem_bytes, os, arch, engine_version,
-	ffmpeg_version, sandbox_level, kinds, slots, models, version, registered_at, decided_by, decided_at,
-	last_seen_at, gauges`
+// workerSelect selects a worker (aliased w) with its counters.
+const workerSelect = `SELECT w.id, w.state, w.hostname, w.description, w.cpu_model, w.cores, w.mem_bytes, w.os,
+	w.arch, w.engine_version, w.ffmpeg_version, w.sandbox_level, w.kinds, w.slots, w.models, w.version,
+	w.registered_at, w.decided_by, w.decided_at, w.last_seen_at, w.gauges, ` + workerStatsCols + `
+	FROM workers w LEFT JOIN worker_stats ws ON ws.worker_id = w.id`
 
 func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
 	var w Worker
@@ -93,11 +97,13 @@ func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
 	var registered int64
 	var decidedBy, gauges sql.NullString
 	var decidedAt, lastSeen sql.NullInt64
-	if err := row.Scan(&w.ID, &w.State, &f.Hostname, &f.Description, &f.CPUModel, &f.Cores, &f.MemBytes, &f.OS,
-		&f.Arch, &f.EngineVersion, &f.FFmpegVersion, &f.SandboxLevel, &kinds, &f.Slots, &models, &f.Version,
-		&registered, &decidedBy, &decidedAt, &lastSeen, &gauges); err != nil {
+	var st statsScan
+	if err := row.Scan(append([]any{&w.ID, &w.State, &f.Hostname, &f.Description, &f.CPUModel, &f.Cores,
+		&f.MemBytes, &f.OS, &f.Arch, &f.EngineVersion, &f.FFmpegVersion, &f.SandboxLevel, &kinds, &f.Slots,
+		&models, &f.Version, &registered, &decidedBy, &decidedAt, &lastSeen, &gauges}, st.dest()...)...); err != nil {
 		return nil, err
 	}
+	w.Stats = st.stats()
 	if err := json.Unmarshal([]byte(kinds), &f.Kinds); err != nil {
 		return nil, fmt.Errorf("worker %s kinds: %w", w.ID, err)
 	}
@@ -116,7 +122,7 @@ func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
 
 // WorkerByID returns a worker in any state.
 func (s *Store) WorkerByID(ctx context.Context, id string) (*Worker, error) {
-	w, err := scanWorker(s.r.QueryRowContext(ctx, `SELECT `+workerCols+` FROM workers WHERE id = ?`, id))
+	w, err := scanWorker(s.r.QueryRowContext(ctx, workerSelect+` WHERE w.id = ?`, id))
 	if err != nil {
 		return nil, notFound(err, "worker "+id)
 	}
@@ -127,7 +133,7 @@ func (s *Store) WorkerByID(ctx context.Context, id string) (*Worker, error) {
 // tokens are revoked, so they are reported as ErrNotFound.
 func (s *Store) WorkerByTokenHash(ctx context.Context, hash string) (*Worker, error) {
 	w, err := scanWorker(s.r.QueryRowContext(ctx,
-		`SELECT `+workerCols+` FROM workers WHERE token_hash = ? AND state != 'rejected'`, hash))
+		workerSelect+` WHERE w.token_hash = ? AND w.state != 'rejected'`, hash))
 	if err != nil {
 		return nil, notFound(err, "worker by token")
 	}
@@ -137,7 +143,7 @@ func (s *Store) WorkerByTokenHash(ctx context.Context, hash string) (*Worker, er
 // ListWorkers returns all workers, pending first, then by registration time.
 func (s *Store) ListWorkers(ctx context.Context) ([]Worker, error) {
 	rows, err := s.r.QueryContext(ctx,
-		`SELECT `+workerCols+` FROM workers ORDER BY state != 'pending', registered_at, id`)
+		workerSelect+` ORDER BY w.state != 'pending', w.registered_at, w.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list workers: %w", err)
 	}

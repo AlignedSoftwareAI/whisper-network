@@ -71,7 +71,7 @@ func (s *Server) handleAdminListWorkers(w http.ResponseWriter, r *http.Request, 
 			return err
 		}
 		out = append(out, api.WorkerSummary{Worker: *doc, RegisteredAt: wk.RegisteredAt,
-			DecidedBy: wk.DecidedBy, DecidedAt: wk.DecidedAt, Gauges: gaugesOf(wk.Gauges)})
+			DecidedBy: wk.DecidedBy, DecidedAt: wk.DecidedAt, Gauges: gaugesOf(wk.Gauges), Stats: &wk.Stats})
 	}
 	writeJSON(w, http.StatusOK, out)
 	return nil
