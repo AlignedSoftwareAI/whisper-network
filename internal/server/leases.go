@@ -137,10 +137,17 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request, p *Principa
 }
 
 func (s *Server) leased(l *store.Lease) {
-	obs.Info(&s.log, obs.EventTaskLeased).Str(obs.FieldJobID, l.JobID).Int(obs.FieldTaskSeq, l.Seq).
+	ev := obs.Info(&s.log, obs.EventTaskLeased).Str(obs.FieldJobID, l.JobID).Int(obs.FieldTaskSeq, l.Seq).
 		Str(obs.FieldTaskKind, string(l.Kind)).Str(obs.FieldLeaseID, l.ID).Str(obs.FieldWorkerID, l.WorkerID).
 		Str(obs.FieldQueue, l.QueueName).Str(obs.FieldWeight, string(l.Weight)).Float64(obs.FieldCost, l.Cost).
-		Float64(obs.FieldVTime, l.VTime).Int(obs.FieldAttempt, l.Attempt).Msg("task leased")
+		Float64(obs.FieldVTime, l.VTime).Int(obs.FieldAttempt, l.Attempt)
+	if l.SameWorkerRetry {
+		// Retry-elsewhere (DESIGN.md §8.2) let this worker have a task it
+		// already failed: say so, since a repeat failure may be the worker.
+		ev = ev.Str(obs.FieldReason, "retry on the worker that already failed this task: "+
+			"no other worker took it within the retry-elsewhere grace")
+	}
+	ev.Msg("task leased")
 	s.metrics.ServedCost(l.QueueName, l.Weight, l.Cost)
 }
 

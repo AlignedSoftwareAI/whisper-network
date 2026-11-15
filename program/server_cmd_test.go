@@ -51,6 +51,10 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	assert.Equal(t, 1, cfg.AnalysesPerPrincipal)
 	assert.Equal(t, 6*time.Hour, cfg.MaxLeaseAge)
 	assert.InDelta(t, 4.0, cfg.LeaseAgeFactor, 0)
+	scfg, err := c.storeConfig()
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Minute, scfg.RetryElsewhereGrace, "retry elsewhere is on by default")
+	assert.Equal(t, 2, scfg.MaxAttempts)
 	w, mf, err := c.storeTuning()
 	require.NoError(t, err)
 	assert.Equal(t, sched.ClassWeights{Low: 1, Medium: 3, High: 9}, w)
@@ -80,6 +84,7 @@ func TestServerCmdValidation(t *testing.T) {
 		"zero analyses each":   {"--max-analyses-per-principal", "0"},
 		"zero lease age":       {"--max-lease-age", "0s"},
 		"negative age factor":  {"--lease-age-factor", "-1"},
+		"negative retry grace": {"--retry-elsewhere-grace", "-1m"},
 	} {
 		_, err := parse(t, append([]string{"server"}, args...)...)
 		assert.Error(t, err, name)

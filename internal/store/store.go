@@ -86,6 +86,12 @@ type Config struct {
 	PrepareCost float64
 	// MaxAttempts is how many counted leases a task may have. Default 2.
 	MaxAttempts int
+	// RetryElsewhereGrace keeps a worker from leasing a task it failed or
+	// let expire until this long after that lease ended, so another worker
+	// gets the retry; once it has passed, the same worker may retry (a
+	// single-worker fleet still makes progress). Zero disables the rule.
+	// The server's --retry-elsewhere-grace defaults to 10 minutes.
+	RetryElsewhereGrace time.Duration
 	// PrepareMinSandbox is the minimum worker sandbox level for prepare
 	// tasks. Defaults to full.
 	PrepareMinSandbox api.SandboxLevel

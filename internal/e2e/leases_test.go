@@ -73,7 +73,7 @@ func TestMaxAttemptsFailsJob(t *testing.T) {
 	doomed.Kill()
 	failed := e.WaitJob(job.ID, api.JobFailed)
 	require.NotNil(t, failed.Error)
-	assert.Equal(t, "transcribe task 1 failed after 1 attempt(s): lease expired", *failed.Error)
+	assert.Equal(t, "transcribe task 1 failed after 1 attempt(s) (on worker "+doomed.ID()+"): lease expired", *failed.Error)
 	assert.Equal(t, 1, failed.Tasks.Failed)
 	assert.NotNil(t, failed.CompletedAt)
 	e.WaitEvent(obs.EventJobFailed, func(m map[string]any) bool { return m[obs.FieldJobID] == job.ID })
@@ -171,7 +171,8 @@ func TestChildCrashIsRetriedThenFails(t *testing.T) {
 	job := e.Submit(sub, "public", api.JobParams{}, e2etest.SpeechWAV(2))
 	failed := e.WaitJob(job.ID, api.JobFailed)
 	require.NotNil(t, failed.Error)
-	assert.Contains(t, *failed.Error, "transcribe task 1 failed after 2 attempt(s): whisper-cli failed (exit status 3)")
+	assert.Contains(t, *failed.Error, "transcribe task 1 failed after 2 attempt(s) (on workers "+w.ID()+", "+w.ID()+
+		"): whisper-cli failed (exit status 3)", "retry elsewhere is off: the one worker retries at once")
 	var evs []map[string]any
 	e.Eventually(func() bool { // logged just after the job failed
 		evs = e.Logs.Events(t, obs.EventTaskFailed)

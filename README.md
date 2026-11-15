@@ -64,8 +64,12 @@ creates a **lease**: a random ID that expires unless the worker heartbeats
 (every 30 s by default; leases live three intervals). The lease ID fences all
 later calls. If the lease has expired, was cancelled, or the job was deleted,
 the worker gets `410 Gone` and must stop. A task that starts twice without
-finishing fails the job (`--max-attempts`, default 2). When the last
-transcribe task finishes, the server assembles the transcript.
+finishing fails the job (`--max-attempts`, default 2). A task that failed
+or expired on one worker is retried on another: the worker it failed on gets
+it back only if no other worker has taken it within
+`--retry-elsewhere-grace` (default 10m), so a single-worker fleet still
+makes progress. When the last transcribe task finishes, the server assembles
+the transcript.
 
 ## Quick start with Docker
 
@@ -316,6 +320,7 @@ for the authoritative list.
 | `--trust-proxy` | off | `WHISPER_TRUST_PROXY` | Trust `X-Forwarded-For`; only behind a proxy that sets it |
 | `--heartbeat-interval` | `30s` | `WHISPER_HEARTBEAT_INTERVAL` | Worker heartbeat interval; leases live 3x this |
 | `--max-attempts` | `2` | `WHISPER_MAX_ATTEMPTS` | Counted leases per task before the job fails |
+| `--retry-elsewhere-grace` | `10m` | `WHISPER_RETRY_ELSEWHERE_GRACE` | A worker that failed a task (or let its lease expire) may retry it only after this long, so another worker gets the retry first; `0` disables |
 | `--task-target` | `60m` | `WHISPER_TASK_TARGET` | Target audio length of one transcribe task |
 | `--split-window` | `60s` | `WHISPER_SPLIT_WINDOW` | Search window around each split point |
 | `--class-weights` | `low=1,medium=2,high=4` | `WHISPER_CLASS_WEIGHTS` | Job weight-class shares |
