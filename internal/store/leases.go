@@ -31,6 +31,9 @@ type LeaseEnd struct {
 	JobFailed bool
 	// Cancelled lists sibling leases cancelled because the job failed.
 	Cancelled []string
+	// AutoPaused is set if this lease end tripped the worker circuit
+	// breaker and the worker was paused in the same transaction.
+	AutoPaused *AutoPause
 }
 
 // leaseRow is a lease joined with the scheduling facts of its task.
@@ -115,7 +118,8 @@ func (s *Store) checkLive(l leaseRow, now time.Time) error {
 }
 
 // endLease ends a live lease with outcome, counts it in its worker's
-// counters (failed and expired only), and disposes of its task:
+// counters (failed and expired only) and failure streak (which may pause
+// the worker, see trackFailureStreak), and disposes of its task:
 //   - the task's attempts become the number of distinct workers it has
 //     failed or expired on (DESIGN.md §4.2), so a release or cancellation
 //     refunds the attempt its lease was charged, and a second failed or
@@ -139,12 +143,16 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 	if err := countLeaseEnd(ctx, tx, l.WorkerID, outcome); err != nil {
 		return nil, err
 	}
+	pause, err := s.trackFailureStreak(ctx, tx, l, outcome, retryable, now)
+	if err != nil {
+		return nil, err
+	}
 	workers, err := failedOn(ctx, tx, l.JobID, l.Seq)
 	if err != nil {
 		return nil, err
 	}
 	end := &LeaseEnd{LeaseID: l.ID, JobID: l.JobID, Seq: l.Seq, Kind: l.Kind, WorkerID: l.WorkerID,
-		Outcome: outcome, Attempt: len(workers)}
+		Outcome: outcome, Attempt: len(workers), AutoPaused: pause}
 	errText := sql.NullString{String: reason, Valid: reason != ""}
 
 	if retryable && end.Attempt < s.cfg.MaxAttempts {

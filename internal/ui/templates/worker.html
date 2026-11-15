@@ -4,8 +4,10 @@
 <header class="row title">
   <h1>{{$w.Name}}</h1>
   <span class="badge state-{{$w.State}}">{{$w.State}}</span>
+  {{if $w.PauseReason}}<span class="badge auto-paused">auto-paused</span>{{end}}
   {{if $w.Online}}<span class="badge online">online</span>{{end}}
 </header>
+{{with $w.PauseReason}}<p class="notice auto-paused">Paused automatically by the circuit breaker: {{.}}. It finishes its current tasks but takes no new ones until resumed; resuming clears the failure streak.</p>{{end}}
 
 <section class="card">
   <h2>Facts</h2>
@@ -118,6 +120,7 @@
     <dt>Compute</dt><dd>{{dur .ComputeTime}}</dd>
     <dt>Realtime factor</dt><dd>{{if .RTF}}{{num .RTF}}× realtime{{else}}<span class="muted">none yet</span>{{end}}</dd>
     <dt>Failures</dt><dd>{{.Failures}} failed, {{.ExpiredLeases}} expired{{if or .TasksDone .Failures .ExpiredLeases}} · {{pct .FailurePct}} failure rate{{end}}</dd>
+    {{if $.FailureStreak}}<dt>Failure streak</dt><dd><span class="streak">failure streak {{$.FailureStreak}} in {{$.StreakJobs}} job{{if ne $.StreakJobs 1}}s{{end}}</span></dd>{{end}}
     <dt>First task</dt><dd>{{if .FirstTaskAt}}{{whenp .FirstTaskAt}}{{else}}<span class="muted">never</span>{{end}}</dd>
     <dt>Last task</dt><dd>{{if .LastTaskAt}}{{whenp .LastTaskAt}} <span class="muted small">({{ago .LastTaskAt}})</span>{{else}}<span class="muted">never</span>{{end}}</dd>
   </dl>

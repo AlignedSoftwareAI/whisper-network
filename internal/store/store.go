@@ -88,6 +88,12 @@ type Config struct {
 	// let its lease expire) before it fails its job. A worker never gets a
 	// task it failed back, so each retry runs elsewhere. Default 2.
 	MaxAttempts int
+	// WorkerFailureLimit is the worker circuit breaker (DESIGN.md §4.2): an
+	// active worker whose failure streak reaches this many failures, across
+	// at least two jobs, is paused by the system in the transaction that
+	// ends the lease. Zero disables it. The server's --worker-failure-limit
+	// defaults to 3.
+	WorkerFailureLimit int
 	// PrepareMinSandbox is the minimum worker sandbox level for prepare
 	// tasks. Defaults to full.
 	PrepareMinSandbox api.SandboxLevel

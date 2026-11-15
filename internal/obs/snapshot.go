@@ -74,6 +74,10 @@ type WorkerStat struct {
 	LastSeen  time.Time
 	Slots     int
 	SlotsBusy int
+	// FailureStreak is the circuit breaker's failure streak; AutoPaused is
+	// true while the breaker holds the worker paused (DESIGN.md §4.2).
+	FailureStreak int
+	AutoPaused    bool
 	// The remaining fields come from heartbeat gauges.
 	ChildRSSBytes int64
 	Load1         float64
@@ -169,6 +173,13 @@ func (m *Metrics) writeWorkers(w io.Writer, in []WorkerStat) {
 		{"whisper_worker_child_rss_bytes", func(x WorkerStat) float64 { return float64(x.ChildRSSBytes) }},
 		{"whisper_worker_load1", func(x WorkerStat) float64 { return x.Load1 }},
 		{"whisper_worker_cpu_throttled_seconds", func(x WorkerStat) float64 { return x.CPUThrottled.Seconds() }},
+		{"whisper_worker_failure_streak", func(x WorkerStat) float64 { return float64(x.FailureStreak) }},
+		{"whisper_worker_auto_paused", func(x WorkerStat) float64 {
+			if x.AutoPaused {
+				return 1
+			}
+			return 0
+		}},
 	}
 	for _, x := range ws {
 		metrics.WriteGaugeFloat64(w, series("whisper_worker_info",

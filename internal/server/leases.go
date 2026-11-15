@@ -250,12 +250,21 @@ func (s *Server) releaseOrphan(ctx context.Context, l *store.Lease, workerID str
 }
 
 // leaseEnded does the bookkeeping common to every non-success lease end:
-// metrics, waking claims when the task requeued, and job failure.
+// metrics, the circuit breaker's report, waking claims when the task
+// requeued, and job failure.
 func (s *Server) leaseEnded(ctx context.Context, end *store.LeaseEnd) {
 	if end == nil {
 		return
 	}
 	s.metrics.LeaseEnded(end.Outcome, end.Kind)
+	if p := end.AutoPaused; p != nil {
+		// Paused and audited in the transaction that ended the lease.
+		obs.Warn(&s.log, obs.EventWorkerAutoPaused).Str(obs.FieldWorkerID, p.WorkerID).
+			Str(obs.FieldActor, store.SystemActor).Str(obs.FieldReason, p.Reason).
+			Int(obs.FieldFailures, p.Failures).Int(obs.FieldJobs, p.Jobs).Str(obs.FieldLeaseID, end.LeaseID).
+			Str(obs.FieldJobID, end.JobID).Msg("worker paused by the circuit breaker")
+		s.metrics.WorkerAutoPaused(p.WorkerID)
+	}
 	if end.Requeued {
 		s.disp.Notify()
 	}

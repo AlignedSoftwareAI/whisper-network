@@ -21,6 +21,7 @@ const (
 	EventWorkerRegistered Event = "worker.registered"
 	EventWorkerApproved   Event = "worker.approved"
 	EventWorkerPaused     Event = "worker.paused"
+	EventWorkerAutoPaused Event = "worker.auto_paused"
 	EventWorkerResumed    Event = "worker.resumed"
 	EventWorkerRejected   Event = "worker.rejected"
 	EventWorkerSandbox    Event = "worker.sandbox"
@@ -79,4 +80,6 @@ const (
 	FieldQueues         = "queues"
 	FieldSandboxLevel   = "sandbox_level"
 	FieldLandlockABI    = "landlock_abi"
+	FieldFailures       = "failures"
+	FieldJobs           = "jobs"
 )

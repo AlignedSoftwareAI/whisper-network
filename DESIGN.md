@@ -138,8 +138,14 @@ Trade-off: the worker image ships three binaries (`whisper-network`, `whisper-cl
 ```
 
 - **pending**: may only `GET /worker/{id}` and wait. Claims return 403 with `state: pending`.
-- **paused**: running leases continue to completion. New claims return 409 `paused`. The worker keeps polling slowly so it notices when it is resumed.
+- **paused**: running leases continue to completion. New claims return 409 `paused`. The worker keeps polling slowly so it notices when it is resumed. An administrator pauses a worker, or the circuit breaker does (below).
 - **rejected**: the token is revoked and active leases are cancelled; the next heartbeat returns 410, and the worker kills its child and exits non-zero. Terminal. A new registration is a new worker.
+
+**Circuit breaker (auto-pause).** A bad worker (a broken build or model, a failing disk, too little memory) must not keep failing jobs, so the server takes it out of service by itself. Each worker has a **failure streak**: its leases that ended `failed` with `retryable` set, or `expired`, since its last completed task. A non-retryable failure is the input's fault (ffmpeg rejecting an upload as invalid data), not the worker's, so it neither counts nor resets the streak; releases and cancellations do neither either. A completed task (a transcribe result or an accepted prepare) ends the streak.
+
+When an **active** worker's streak reaches `--worker-failure-limit` (default 3) failures **spanning at least two distinct jobs**, the transaction that ended the lease also moves the worker to `paused`, with `decided_by = system` and a stored reason such as `3 consecutive failures across 2 jobs`, and appends the `worker.pause` audit entry (actor `system`, the reason in its detail, §5.2.1). The two-job rule means one poisoned input that crashes every worker it meets cannot take a healthy worker out of service. The server then logs `worker.auto_paused` and counts `whisper_worker_auto_paused_total` (§10). The paused worker finishes its current leases (they still count in the streak but cannot pause it again) and claims nothing new; the Workers page shows it as auto-paused with the reason. Resuming it (an administrator's decision, since the cause is usually on the machine) clears the reason and the streak. `--worker-failure-limit 0` turns the breaker off; the streak is still kept and shown.
+
+The breaker complements **retry elsewhere** (below): retry elsewhere moves a failed task to another worker, and the breaker stops the failing worker from taking further tasks in the meantime. The streak lives in `worker_failure_streak`, one row per (worker, job) with the failures in that job, so deleting a job drops its share.
 
 **Job** (derived from its tasks, but stored for cheap querying)
 
@@ -205,7 +211,8 @@ CREATE TABLE workers (
   sandbox_level TEXT,                     -- 'full' | 'fs-only' | 'none' (§7.4)
   slots INTEGER, models TEXT,             -- JSON
   registered_at INTEGER NOT NULL, decided_by TEXT, decided_at INTEGER,
-  last_seen_at INTEGER, gauges TEXT);     -- JSON, latest gauges from a heartbeat or claim
+  last_seen_at INTEGER, gauges TEXT,      -- JSON, latest gauges from a heartbeat or claim
+  pause_reason TEXT);                     -- set while paused by the circuit breaker (§4.2)
 
 CREATE TABLE grants (
   principal TEXT NOT NULL,                -- 'user:<id>' | 'client:<id>' | 'worker:<id>'
@@ -261,6 +268,12 @@ CREATE TABLE worker_stats (                   -- per-worker work counters
   prepare_compute_ms INTEGER, transcribe_compute_ms INTEGER,
   failures INTEGER, expired INTEGER,          -- leases ended 'failed' / 'expired'
   first_task_at INTEGER, last_task_at INTEGER);  -- first / last completion
+
+CREATE TABLE worker_failure_streak (          -- circuit breaker (§4.2)
+  worker_id TEXT NOT NULL REFERENCES workers ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs ON DELETE CASCADE,
+  failures INTEGER NOT NULL,                  -- failed (retryable) and expired leases in this job
+  PRIMARY KEY (worker_id, job_id)) WITHOUT ROWID;
 
 CREATE TABLE sched_vtime (                    -- §8.2
   queue_id INTEGER NOT NULL REFERENCES queues ON DELETE CASCADE,
@@ -331,7 +344,7 @@ Transcripts, prompts and metadata are the sensitive part of a job (meeting conte
 
 #### 5.2.1 Audit
 
-Every change to authorization or to stored state that a person, client or worker causes is recorded in the audit log (`GET /admin/audit`, filterable by action prefix, actor, target and time; the `/ui/audit` page). **A change and its audit entry commit in the same database transaction:** if the audit entry cannot be written, the change fails and nothing is applied. Changes the server makes itself (retention, pruning, session expiry, media purges) use the actor `system`; the offline admin command uses `admin-cli`.
+Every change to authorization or to stored state that a person, client or worker causes is recorded in the audit log (`GET /admin/audit`, filterable by action prefix, actor, target and time; the `/ui/audit` page). **A change and its audit entry commit in the same database transaction:** if the audit entry cannot be written, the change fails and nothing is applied. Changes the server makes itself (retention, pruning, session expiry, media purges, the circuit breaker's auto-pause) use the actor `system`; the offline admin command uses `admin-cli`.
 
 | Action | Recorded when | Actor |
 |---|---|---|
@@ -346,6 +359,7 @@ Every change to authorization or to stored state that a person, client or worker
 | `worker.register` | A worker registers (`POST /worker`) | the worker |
 | `worker.update_facts` | A worker replaces its reported facts | the worker |
 | `worker.approve` / `worker.pause` / `worker.resume` / `worker.reject` | Worker lifecycle and queue access decisions | the acting principal |
+| `worker.pause` (auto) | The circuit breaker pauses a worker (§4.2); the detail carries the `reason`, `failures` and `jobs` | `system` |
 | `worker.prune` | The reaper deletes a pending worker past `--pending-worker-ttl` or a rejected worker past `--rejected-worker-retention` (one entry per worker) | `system` |
 | `job.create` | A job is created by upload (a replayed idempotency key is not a new entry) | the submitting principal |
 | `job.delete` | A job is deleted by its owner, by a principal with `delete_all`/`admin`, or by retention | the deleting principal, or `system` |
@@ -790,6 +804,7 @@ Every line also carries `service="whisper-network"`, `mode` (`server`/`worker`),
 | `lease.expired` / `lease.released` | warn / info | server | `lease_id`, `worker_id`, `attempt` |
 | `task.done` / `task.failed` | info / warn | server + worker | `lease_id`, `compute_ms`, `audio_s`, `rtf`, `error`, `stderr_tail` (≤ 4 KiB); a task the reaper fails at the retry wait limit (§8.2) has no lease and carries `failed_on` (the workers) |
 | `worker.registered` / `.approved` / `.paused` / `.resumed` / `.rejected` | info | server | `worker_id`, `hostname`, `actor`, `queues` |
+| `worker.auto_paused` | warn | server | `worker_id`, `actor` (`system`), `reason`, `failures`, `jobs`, and the `lease_id` / `job_id` of the failure that tripped it (§4.2) |
 | `worker.sandbox` | info / warn | worker | `sandbox_level`, `landlock_abi` |
 | `auth.denied` | warn | server | `principal`, `route`, `reason` |
 | `admin.change` | info | server | `actor`, `action`, `target` (mirrors the audit table) |
@@ -850,6 +865,9 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | `whisper_worker_child_rss_bytes` | gauge | `worker` | Memory sizing (§7.3) |
 | `whisper_worker_models_bytes` / `whisper_worker_work_bytes` | gauge | `worker` | Disk use under `--state`: model cache, lease work directories |
 | `whisper_worker_state_free_bytes` | gauge | `worker` | Worker disk alert |
+| `whisper_worker_failure_streak` | gauge | `worker` | The circuit breaker's input: failed (retryable) and expired leases since the last completed task (§4.2) |
+| `whisper_worker_auto_paused` | gauge (0/1) | `worker` | 1 while the circuit breaker holds the worker paused; survives server restarts (from the database) |
+| `whisper_worker_auto_paused_total` | counter | `worker` | Circuit breaker trips since the server started |
 | `whisper_http_requests_total` | counter | `route`, `method`, `code` | |
 | `whisper_http_request_duration_seconds` | histogram | `route` | |
 | `whisper_upload_bytes_total` / `whisper_input_served_bytes_total` | counter | `queue` / `kind` | Bandwidth |
@@ -868,6 +886,7 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | Disk | `whisper_data_free_bytes / (whisper_data_free_bytes + sum(whisper_storage_bytes)) < 0.1` |
 | Worker disk | `whisper_worker_state_free_bytes < 2 GiB` for 15 min (the worker starts handing back large tasks near its 1 GiB `--disk-reserve`) |
 | No eligible worker | `whisper_tasks{state="pending"} > 0` and no worker granted that queue has been seen in 10 min (computed server-side as `whisper_queue_eligible_workers == 0`) |
+| Worker auto-paused | `whisper_worker_auto_paused == 1`: the circuit breaker took a worker out of service; it stays out until an administrator resumes it |
 
 ### 10.3 Health
 
@@ -897,6 +916,7 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--heartbeat-interval` | 30s | Leases live 3× this |
 | `--max-attempts` | 2 | Distinct workers a task may fail on (or let its lease expire) before its job fails; a worker never gets a task it failed back (§4.2, §8.2) |
 | `--retry-wait-limit` | 24h | A task that failed and has waited this long with no other eligible worker taking it fails its job, naming the workers that failed it (§8.2) |
+| `--worker-failure-limit` | 3 | Circuit breaker: pause a worker after this many failed (retryable) or expired leases in a row, spanning at least 2 jobs; `0` disables (§4.2) |
 | `--task-target` | 60m | |
 | `--split-window` | 60s | Search window around each split point |
 | `--class-weights` | `low=1,medium=2,high=4` | |

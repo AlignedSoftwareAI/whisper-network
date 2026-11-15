@@ -23,6 +23,12 @@ type Worker struct {
 	Gauges json.RawMessage
 	// Stats are the worker's work counters (zero if it has done nothing).
 	Stats api.WorkerStats
+	// FailureStreak and StreakJobs are the worker's current failure streak
+	// and the distinct jobs in it (the circuit breaker, DESIGN.md §4.2).
+	FailureStreak, StreakJobs int
+	// PauseReason says why the system paused the worker by itself; empty
+	// unless the circuit breaker paused it.
+	PauseReason string
 }
 
 // Principal returns the worker's grant principal.
@@ -87,7 +93,9 @@ func nonNil[T any](s []T) []T {
 // workerSelect selects a worker (aliased w) with its counters.
 const workerSelect = `SELECT w.id, w.state, w.hostname, w.description, w.cpu_model, w.cores, w.mem_bytes, w.os,
 	w.arch, w.engine_version, w.ffmpeg_version, w.sandbox_level, w.kinds, w.slots, w.models, w.version,
-	w.registered_at, w.decided_by, w.decided_at, w.last_seen_at, w.gauges, ` + workerStatsCols + `
+	w.registered_at, w.decided_by, w.decided_at, w.last_seen_at, w.gauges, w.pause_reason,
+	(SELECT COALESCE(SUM(f.failures), 0) FROM worker_failure_streak f WHERE f.worker_id = w.id),
+	(SELECT COUNT(*) FROM worker_failure_streak f WHERE f.worker_id = w.id), ` + workerStatsCols + `
 	FROM workers w LEFT JOIN worker_stats ws ON ws.worker_id = w.id`
 
 func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
@@ -95,12 +103,13 @@ func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
 	var f = &w.Facts
 	var kinds, models string
 	var registered int64
-	var decidedBy, gauges sql.NullString
+	var decidedBy, gauges, pauseReason sql.NullString
 	var decidedAt, lastSeen sql.NullInt64
 	var st statsScan
 	if err := row.Scan(append([]any{&w.ID, &w.State, &f.Hostname, &f.Description, &f.CPUModel, &f.Cores,
 		&f.MemBytes, &f.OS, &f.Arch, &f.EngineVersion, &f.FFmpegVersion, &f.SandboxLevel, &kinds, &f.Slots,
-		&models, &f.Version, &registered, &decidedBy, &decidedAt, &lastSeen, &gauges}, st.dest()...)...); err != nil {
+		&models, &f.Version, &registered, &decidedBy, &decidedAt, &lastSeen, &gauges, &pauseReason,
+		&w.FailureStreak, &w.StreakJobs}, st.dest()...)...); err != nil {
 		return nil, err
 	}
 	w.Stats = st.stats()
@@ -112,6 +121,7 @@ func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
 	}
 	w.RegisteredAt = fromMS(registered)
 	w.DecidedBy = decidedBy.String
+	w.PauseReason = pauseReason.String
 	w.DecidedAt = optTime(decidedAt)
 	w.LastSeenAt = optTime(lastSeen)
 	if gauges.Valid {
@@ -200,9 +210,10 @@ func canTransition(from, to api.WorkerState) bool {
 
 // SetWorkerState moves a worker to state, recording who decided. Illegal
 // transitions (e.g. out of rejected) return ErrConflict; setting the current
-// state again is a no-op. Rejecting a worker cancels its live leases, whose
-// tasks return to pending without consuming an attempt; their ids are
-// returned.
+// state again is a no-op. A change clears the circuit breaker's pause
+// reason, and making the worker active (resume, approval) also clears its
+// failure streak. Rejecting a worker cancels its live leases, whose tasks
+// return to pending without consuming an attempt; their ids are returned.
 func (s *Store) SetWorkerState(ctx context.Context, id string, state api.WorkerState, decidedBy string) (cancelled []string, err error) {
 	return inTx1(ctx, s, func(tx *Tx) ([]string, error) { return tx.SetWorkerState(ctx, id, state, decidedBy) })
 }
@@ -220,9 +231,14 @@ func (t *Tx) SetWorkerState(ctx context.Context, id string, state api.WorkerStat
 		return nil, nil
 	}
 	now := t.s.now()
-	if _, err := t.tx.ExecContext(ctx, `UPDATE workers SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?`,
-		string(state), decidedBy, toMS(now), id); err != nil {
+	if _, err := t.tx.ExecContext(ctx, `UPDATE workers SET state = ?, decided_by = ?, decided_at = ?,
+		pause_reason = NULL WHERE id = ?`, string(state), decidedBy, toMS(now), id); err != nil {
 		return nil, fmt.Errorf("set worker state: %w", err)
+	}
+	if state == api.WorkerActive {
+		if err := clearFailureStreak(ctx, t.tx, id); err != nil {
+			return nil, err
+		}
 	}
 	if state != api.WorkerRejected {
 		return nil, nil

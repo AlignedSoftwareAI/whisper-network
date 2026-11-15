@@ -118,6 +118,11 @@ func (m *Metrics) WorkerAudio(worker, model string, seconds float64) {
 	m.fcounter("whisper_worker_audio_seconds_total", "worker", worker, "model", model).Add(seconds)
 }
 
+// WorkerAutoPaused counts the circuit breaker pausing a worker.
+func (m *Metrics) WorkerAutoPaused(worker string) {
+	m.counter("whisper_worker_auto_paused_total", "worker", worker).Inc()
+}
+
 // Upload adds bytes received from clients for queue.
 func (m *Metrics) Upload(queue string, n int64) {
 	m.counter("whisper_upload_bytes_total", "queue", queue).AddInt64(n)

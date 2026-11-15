@@ -44,6 +44,17 @@ groups:
         annotations:
           summary: "Worker {{ $labels.worker }} has not been seen for over 10 minutes"
 
+      # The circuit breaker (--worker-failure-limit) paused a worker after
+      # repeated failures. The gauge comes from the database, so it survives
+      # server restarts and clears only when an administrator resumes it.
+      - alert: WhisperWorkerAutoPaused
+        expr: whisper_worker_auto_paused == 1
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.worker }} was paused automatically after repeated failures"
+          description: "See the reason on the Workers page (or the worker.pause audit entry by system). Fix the worker, then resume it."
+
       # free / (free + stored media) is a proxy for "fraction of the data
       # volume still available to whisper-network", not filesystem usage.
       - alert: WhisperDiskLow
