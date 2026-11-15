@@ -103,7 +103,10 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    name: Build and push the docker images
+    name: Build and push the release images
+    # Release images (including latest/stable) are published only after the
+    # release's tests pass.
+    needs: build
     permissions:
       contents: read
       packages: write

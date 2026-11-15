@@ -93,7 +93,10 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    name: Build and push the docker images
+    name: Build the docker images (push on default branch)
+    # Images are built only from commits that passed every check, so a
+    # failing commit can never publish an image.
+    needs: [build, fuzz-smoke, lint, format]
     permissions:
       contents: read
       packages: write
@@ -133,7 +136,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Worker image (default target; also runs `server`): <tag>
-      - name: Build and push worker image
+      - name: Build worker image (pushed on default branch)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -148,7 +151,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=worker
 
       # Minimal distroless server image: <tag>-server
-      - name: Build and push server image
+      - name: Build server image (pushed on default branch)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
