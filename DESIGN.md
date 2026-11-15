@@ -294,10 +294,11 @@ Notes:
 | Role | Scope | Allows |
 |---|---|---|
 | `admin` | `*` | Everything, including creating users and queues, **setting queue weights**, and granting roles. |
-| `queue_admin` | `queue:X` | Approve or reject workers **for queue X** (i.e. grant `process` on X), grant and revoke `submit`, `view_all`, `delete_all` and `process` on X, see all jobs on X. Cannot grant or revoke `queue_admin` (queue admins cannot make or remove other queue admins). Cannot change X's weight, because weight is a fleet-wide resource decision. |
+| `queue_admin` | `queue:X` | Approve or reject workers **for queue X** (i.e. grant `process` on X), grant and revoke `submit`, `view_all`, `delete_all` and `process` on X, list all jobs on X and read their status documents (as `view_all`), delete any job on X. **Does not read job content**: transcripts, results, prompts and metadata need `read_all` as well. Cannot grant or revoke `queue_admin` (queue admins cannot make or remove other queue admins) or `read_all`. Cannot change X's weight, because weight is a fleet-wide resource decision. |
 | `worker_admin` | `*` or `worker:W` | Approve, pause, resume and reject the worker(s) in scope. With scope `*`, may also grant `worker_admin` on `worker:<id>`. Cannot grant queue access unless also `queue_admin` for that queue. |
-| `submit` (client) | `queue:X` | Create jobs on X. See and delete its own jobs on X. |
-| `view_all` (client) | `queue:X` | See, and download transcripts of, all jobs on X. |
+| `submit` (client) | `queue:X` | Create jobs on X. See, read and delete its own jobs on X. |
+| `view_all` | `queue:X` | List all jobs on X and read their status documents (`GET /queue/X`, `GET /job/{id}`): state, timings, task counts, label, source, weight, model, errors. Not the job's content: prompt and metadata are left out of the documents, and the transcript and result are `403`. For monitoring: operators, dashboards, progress-reporting agents. |
+| `read_all` | `queue:X` | Read the content of every job on X: download its transcript and result (`GET /job/{id}/transcript`, `GET /job/{id}/result`), and see its `prompt` and `metadata`. Implies `view_all` on X (a reader can list and see what it may read). Granted and revoked only by `admin`. |
 | `delete_all` (client) | `queue:X` | Delete any job on X. *Open item; see §13.* |
 | `client_admin` | `*` | Create and revoke clients via `POST /client`. When creating a client it may hand on grants it holds itself (no escalation); this re-delegation applies only at creation. Revoking a client requires authority over every grant that client holds. |
 | `process` (worker) | `queue:X` | Lease tasks (prepare and transcribe) from X. |
@@ -306,7 +307,20 @@ Notes:
 
 A worker in `active` state with no `process` grants is legal and simply idle.
 
-**Grant management.** Granting to, or revoking from, an existing principal requires `admin`, or `queue_admin` on queue X for `submit`, `view_all`, `delete_all` and `process` on `queue:X`, or (for `worker_admin` on `worker:<id>` only) `worker_admin` on `*`. Revoking needs exactly the authority that granting would. Revoking a worker's `process` grant also cancels, in the same transaction, the worker's live leases on every queue it no longer holds `process` on (outcome `cancelled`; the task requeues without using an attempt, as on rejection), so withdrawn access to a queue's media takes effect at once. Holding a role never by itself lets you hand it on: re-delegating your own grants is allowed only when creating a client (`client_admin`, above). Revoking a client's token requires `client_admin` plus authority over every grant the client holds, so a client admin cannot revoke a client more privileged than itself. Grant listings do not reveal whether a principal exists.
+**Seeing a job is not reading it.** Who may do what with a job on queue X:
+
+| | List and status | Prompt and metadata | Transcript and result | Delete |
+|---|---|---|---|---|
+| The job's owner | yes | yes | yes | yes |
+| `view_all` on X | yes | no | `403` | no |
+| `read_all` on X | yes | yes | yes | no |
+| `queue_admin` on X | yes | no | `403` | yes |
+| `delete_all` on X | no (`404`) | no | no | yes |
+| `admin` | yes | yes | yes | yes |
+
+Transcripts, prompts and metadata are the sensitive part of a job (meeting content, names), so reading them is a separate grant from monitoring a queue, and `queue_admin` (which manages a queue's workers and access) does not imply it. A database created before `read_all` existed is migrated (schema version 3) by giving every existing `view_all` and `queue_admin` grant a `read_all` grant on the same queue, so upgraded deployments keep the access they had; revoke those `read_all` grants to narrow it.
+
+**Grant management.** Granting to, or revoking from, an existing principal requires `admin`, or `queue_admin` on queue X for `submit`, `view_all`, `delete_all` and `process` on `queue:X` (not `read_all`: a queue admin does not itself read transcripts, so it cannot hand that out), or (for `worker_admin` on `worker:<id>` only) `worker_admin` on `*`. Revoking needs exactly the authority that granting would. Revoking a worker's `process` grant also cancels, in the same transaction, the worker's live leases on every queue it no longer holds `process` on (outcome `cancelled`; the task requeues without using an attempt, as on rejection), so withdrawn access to a queue's media takes effect at once. Holding a role never by itself lets you hand it on: re-delegating your own grants is allowed only when creating a client (`client_admin`, above). Revoking a client's token requires `client_admin` plus authority over every grant the client holds, so a client admin cannot revoke a client more privileged than itself. Grant listings do not reveal whether a principal exists.
 
 #### 5.2.1 Audit
 
@@ -336,8 +350,9 @@ Audit details never contain secrets or requester content: no passwords, tokens, 
 
 ### 5.3 Visibility rules
 
-- `GET /queue/{q}` lists jobs where `client_id = me`, or every job if the caller holds `view_all`/`queue_admin`/`admin` on q.
+- `GET /queue/{q}` lists jobs where `client_id = me`, or every job if the caller holds `view_all`/`read_all`/`queue_admin`/`admin` on q.
 - `GET /job/{id}` returns **404, not 403**, when the caller can't see the job, so job IDs can't be probed.
+- A job the caller can see but not read (`view_all` or `queue_admin` without `read_all`, not the owner) is listed and its status document returned without `prompt` and `metadata`; its transcript and result are **403** (the job's existence is already known to the caller).
 - Workers can't see jobs at all. They see only their own leases.
 
 ---
@@ -351,10 +366,10 @@ All bodies are JSON unless noted. Errors use RFC 9457 `application/problem+json`
 | Method & path | Purpose | Auth |
 |---|---|---|
 | `POST /queue/{q}` | Create a job. Multipart body: part `params` (JSON) and part `media` (any audio or video). Optional `Idempotency-Key` header. Returns `201` with `Location: /job/{id}` and the job JSON. | `submit` on q |
-| `GET /queue/{q}` | List visible jobs. Query: `state`, `since` (created or updated after), `limit`, `cursor`. | `submit` or `view_all` on q |
+| `GET /queue/{q}` | List visible jobs. Query: `state`, `since` (created or updated after), `limit`, `cursor`. | `submit`, `view_all` or `read_all` on q |
 | `PATCH /queue/{q}` | Change `weight`, `description` or `max_upload_bytes`. | `admin` (weight); `queue_admin` (the others) |
-| `GET /job/{id}` | Job status (below). | owner, or `view_all` on its queue |
-| `GET /job/{id}/transcript` | `text/plain` transcript with the provenance header. Records a download. `409` if not done. | same |
+| `GET /job/{id}` | Job status (below). `prompt` and `metadata` only for those who may read the job. | owner, or `view_all`, `read_all` or `queue_admin` on its queue |
+| `GET /job/{id}/transcript` | `text/plain` transcript with the provenance header. Records a download. `409` if not done. | owner, or `read_all` on its queue |
 | `GET /job/{id}/result` | JSON segments with absolute times, for consumers that want structure. Also records a download. | same |
 | `DELETE /job/{id}` | Delete the job, its blobs and live leases. `204`. | owner, `delete_all`, or `queue_admin` |
 | `POST /client` | Create a client with a set of grants (a subset of the caller's). Returns the token once. | `client_admin` |
@@ -391,6 +406,8 @@ Model choice stays with the client. The rule "`en` → `small.en`, anything else
   "error": null
 }
 ```
+
+`prompt` and `metadata` are present only for the job's owner, `read_all` on its queue, or `admin` (§5.2); `view_all` and `queue_admin` alone get the document without them.
 
 "How long it took" is reported three ways: `wait_s` (created → first lease), `elapsed_s` (first lease → completed), and `compute_s` (sum of task compute time, including prepare). With parallel tasks, compute can exceed elapsed.
 

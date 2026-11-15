@@ -11,9 +11,14 @@ const (
 	ActSubmitJob
 	// ActListQueue lists jobs on Resource.Queue; see Visibility for which.
 	ActListQueue
-	// ActViewJob reads job status or results; needs Queue and OwnerID.
+	// ActViewJob reads a job's status document, without its content
+	// (prompt and metadata); needs Queue and OwnerID.
 	ActViewJob
-	// ActDownloadTranscript reads a job's transcript or result JSON.
+	// ActViewJobContent reads the client-supplied content of a job's status
+	// document (prompt and metadata); needs Queue and OwnerID.
+	ActViewJobContent
+	// ActDownloadTranscript reads a job's transcript or result JSON; needs
+	// Queue and OwnerID.
 	ActDownloadTranscript
 	// ActDeleteJob deletes a job; needs Queue and OwnerID.
 	ActDeleteJob

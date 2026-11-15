@@ -14,6 +14,10 @@ type roleInfo struct {
 	Role  api.Role
 	Label string // column or checkbox heading
 	Help  string // one-line explanation, shown under the heading
+	// Restricted marks a column shown only when the editor may grant it on
+	// some queue, or the principal being edited holds it somewhere: most
+	// editors can never give it, and a column of dashes would only clutter.
+	Restricted bool
 }
 
 // Roles a form may offer, per principal kind. process is never offered: only
@@ -22,18 +26,19 @@ type roleInfo struct {
 // exist for the people who run the service.
 var (
 	userGlobalRoles = []roleInfo{
-		{api.RoleAdmin, "Admin", "Everything, including users and queue weights"},
-		{api.RoleWorkerAdmin, "Worker admin", "Approve, pause and reject any worker"},
-		{api.RoleClientAdmin, "Client admin", "Create and revoke API clients"},
+		{Role: api.RoleAdmin, Label: "Admin", Help: "Everything, including users and queue weights"},
+		{Role: api.RoleWorkerAdmin, Label: "Worker admin", Help: "Approve, pause and reject any worker"},
+		{Role: api.RoleClientAdmin, Label: "Client admin", Help: "Create and revoke API clients"},
 	}
 	clientGlobalRoles = []roleInfo{
-		{api.RoleClientAdmin, "Client admin", "Create and revoke API clients"},
+		{Role: api.RoleClientAdmin, Label: "Client admin", Help: "Create and revoke API clients"},
 	}
 	userQueueRoles = []roleInfo{
-		{api.RoleQueueAdmin, "Queue admin", "Approve workers for the queue; see and delete all its jobs"},
-		{api.RoleSubmit, "Submit", "Create jobs; see and delete its own"},
-		{api.RoleViewAll, "View all", "See every job and transcript"},
-		{api.RoleDeleteAll, "Delete all", "Delete any job"},
+		{Role: api.RoleQueueAdmin, Label: "Queue admin", Help: "Approve workers for the queue; see the status of and delete all its jobs"},
+		{Role: api.RoleSubmit, Label: "Submit", Help: "Create jobs; see, read and delete its own"},
+		{Role: api.RoleViewAll, Label: "View all", Help: "See the status of every job"},
+		{Role: api.RoleReadAll, Label: "Read transcripts", Help: "See every job and read its transcript, prompt and metadata", Restricted: true},
+		{Role: api.RoleDeleteAll, Label: "Delete all", Help: "Delete any job"},
 	}
 	clientQueueRoles = userQueueRoles[1:]
 )
@@ -115,17 +120,35 @@ func grantMatrixFor(granter auth.Principal, grantee auth.PrincipalKind, queues [
 		return grantCell{Value: string(g.Role) + " " + g.Scope,
 			Allowed: rule(granter, []api.Grant{g}) == nil, Checked: has[g]}
 	}
-	m := grantMatrix{Columns: cols}
+	var m grantMatrix
 	for _, ri := range globals {
 		if c := cell(api.Grant{Role: ri.Role, Scope: store.ScopeAll}); c.Allowed || c.Checked {
 			m.Global = append(m.Global, globalGrant{ri, c})
 		}
 	}
-	for _, q := range queues {
+	// cells[i][j] is queue i, role cols[j].
+	cells := make([][]grantCell, len(queues))
+	for i, q := range queues {
+		for _, ri := range cols {
+			cells[i] = append(cells[i], cell(api.Grant{Role: ri.Role, Scope: auth.QueueScope(q.Name)}))
+		}
+	}
+	var keep []int
+	for j, ri := range cols {
+		used := !ri.Restricted
+		for i := 0; i < len(queues) && !used; i++ {
+			used = cells[i][j].Allowed || cells[i][j].Checked
+		}
+		if used {
+			keep = append(keep, j)
+			m.Columns = append(m.Columns, ri)
+		}
+	}
+	for i, q := range queues {
 		row := matrixRow{Queue: q.Name}
 		show := false
-		for _, ri := range cols {
-			c := cell(api.Grant{Role: ri.Role, Scope: auth.QueueScope(q.Name)})
+		for _, j := range keep {
+			c := cells[i][j]
 			show = show || c.Allowed || c.Checked
 			row.Cells = append(row.Cells, c)
 		}

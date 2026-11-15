@@ -33,25 +33,26 @@ func TestGrantMatrixShape(t *testing.T) {
 
 	t.Run("admin granting to a client", func(t *testing.T) {
 		m := newGrantMatrix(admin, auth.KindClient, queues, auth.CanDelegateAtCreation)
-		assert.Equal(t, []api.Role{api.RoleSubmit, api.RoleViewAll, api.RoleDeleteAll}, roles(m.Columns),
+		assert.Equal(t, []api.Role{api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll}, roles(m.Columns),
 			"clients are not offered queue_admin")
 		require.Len(t, m.Global, 1)
 		assert.Equal(t, api.RoleClientAdmin, m.Global[0].Role, "clients are offered only client_admin globally")
 		require.Len(t, m.Rows, 3)
 		assert.Equal(t, "meetings", m.Rows[1].Queue)
 		for _, r := range m.Rows {
-			require.Len(t, r.Cells, 3)
+			require.Len(t, r.Cells, 4)
 			for _, c := range r.Cells {
 				assert.True(t, c.Allowed)
 			}
 		}
 		assert.Equal(t, "view_all queue:meetings", m.Rows[1].Cells[1].Value)
+		assert.Equal(t, "read_all queue:meetings", m.Rows[1].Cells[2].Value)
 		assert.True(t, m.Any())
 	})
 
 	t.Run("admin granting to a user", func(t *testing.T) {
 		m := newGrantMatrix(admin, auth.KindUser, queues, auth.CanGrantTo)
-		assert.Equal(t, []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleDeleteAll}, roles(m.Columns))
+		assert.Equal(t, []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll}, roles(m.Columns))
 		assert.Equal(t, []api.Role{api.RoleAdmin, api.RoleWorkerAdmin, api.RoleClientAdmin}, roles(globalsOf(m)))
 	})
 
@@ -63,6 +64,31 @@ func TestGrantMatrixShape(t *testing.T) {
 		assert.Empty(t, m.Global)
 		require.Len(t, m.Rows, 1, "queues with nothing grantable are left out")
 		assert.Equal(t, "meetings", m.Rows[0].Queue)
+		assert.Equal(t, []api.Role{api.RoleSubmit, api.RoleViewAll, api.RoleDeleteAll}, roles(m.Columns),
+			"a queue admin cannot grant read_all, so the column is not shown")
+	})
+
+	t.Run("read_all column shown when held, even if the editor cannot change it", func(t *testing.T) {
+		qa := auth.Principal{Kind: auth.KindUser, ID: "2", Grants: []api.Grant{
+			{Role: api.RoleQueueAdmin, Scope: auth.QueueScope("meetings")},
+		}}
+		held := []api.Grant{{Role: api.RoleReadAll, Scope: auth.QueueScope("meetings")}}
+		m := editGrantMatrix(qa, auth.KindClient, queues, held)
+		assert.Equal(t, []api.Role{api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll}, roles(m.Columns))
+		require.Len(t, m.Rows, 1)
+		assert.Equal(t, []bool{true, true, false, true}, allowed(m.Rows[0].Cells))
+		assert.True(t, m.Rows[0].Cells[2].Checked)
+	})
+
+	t.Run("client_admin holding read_all may re-delegate it at creation", func(t *testing.T) {
+		holder := auth.Principal{Kind: auth.KindClient, ID: "c", Grants: []api.Grant{
+			{Role: api.RoleClientAdmin, Scope: "*"},
+			{Role: api.RoleReadAll, Scope: auth.QueueScope("public")},
+		}}
+		m := newGrantMatrix(holder, auth.KindClient, queues, auth.CanDelegateAtCreation)
+		assert.Equal(t, []api.Role{api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll}, roles(m.Columns))
+		require.Len(t, m.Rows, 1)
+		assert.Equal(t, []bool{false, false, true, false}, allowed(m.Rows[0].Cells))
 	})
 
 	ca := auth.Principal{Kind: auth.KindClient, ID: "c", Grants: []api.Grant{

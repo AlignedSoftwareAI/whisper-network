@@ -7,6 +7,7 @@ import (
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
+	"github.com/deweysasser/whisper-network/internal/server"
 	"github.com/deweysasser/whisper-network/internal/store"
 )
 
@@ -17,7 +18,7 @@ type jobView struct {
 	Owner       string
 	Tasks       []taskRow
 	CanDelete   bool
-	CanDownload bool
+	CanDownload bool // a done job the viewer may read (auth.ActDownloadTranscript)
 }
 
 // taskRow is one finished task. The store exposes finished task outputs
@@ -58,7 +59,7 @@ func (u *UI) handleJob(w http.ResponseWriter, r *http.Request, rc *reqCtx) error
 	if err != nil {
 		return err
 	}
-	v := jobView{CSRF: rc.CSRF, Job: j.API(u.srv.Now()), Owner: j.ClientID,
+	v := jobView{CSRF: rc.CSRF, Job: server.JobDocument(rc.P.Principal, j, u.srv.Now()), Owner: j.ClientID,
 		CanDelete:   rc.can(auth.ActDeleteJob, res),
 		CanDownload: j.State == api.JobDone && rc.can(auth.ActDownloadTranscript, res)}
 	if p := outs.Prepare; p != nil {

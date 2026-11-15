@@ -10,13 +10,13 @@ import (
 )
 
 func TestValidateGrant(t *testing.T) {
-	ok := []api.Grant{admin, caAll, waAll, waW1, qaA, submitA, viewA, deleteA, processA}
+	ok := []api.Grant{admin, caAll, waAll, waW1, qaA, submitA, viewA, readA, deleteA, processA}
 	for _, gr := range ok {
 		assert.NoError(t, ValidateGrant(gr), "%v", gr)
 	}
 	bad := []api.Grant{
 		g(api.RoleAdmin, "queue:A"), g(api.RoleClientAdmin, "queue:A"),
-		g(api.RoleSubmit, "*"), g(api.RoleQueueAdmin, "*"), g(api.RoleProcess, "worker:w1"),
+		g(api.RoleSubmit, "*"), g(api.RoleQueueAdmin, "*"), g(api.RoleReadAll, "*"), g(api.RoleProcess, "worker:w1"),
 		g(api.RoleWorkerAdmin, "queue:A"), g(api.RoleWorkerAdmin, "worker:"),
 		g(api.RoleSubmit, "queue:"), g(api.RoleSubmit, ""), g("root", "*"), g("", ""),
 	}
@@ -54,6 +54,10 @@ func runGrantCases(t *testing.T, check func(Principal, []api.Grant) error, tests
 // re-delegation of held grants.
 var commonGrantCases = []grantCase{
 	{"admin anything", user(admin), []api.Grant{admin, qaA, waAll, caAll, submitA, processA}, true},
+	{"admin grants read_all", user(admin), []api.Grant{readA}, true},
+	{"queue_admin cannot grant read_all on its queue", user(qaA), []api.Grant{readA}, false},
+	{"client_admin cannot hand out unheld read_all", client(caAll), []api.Grant{readA}, false},
+	{"worker_admin cannot grant read_all", user(waAll), []api.Grant{readA}, false},
 	{"admin empty request", user(admin), nil, true},
 	{"admin malformed", user(admin), []api.Grant{g(api.RoleSubmit, "*")}, false},
 	{"client_admin cannot grant admin", client(caAll), []api.Grant{admin}, false},
@@ -87,6 +91,8 @@ func TestCanGrantTo(t *testing.T) {
 		grantCase{"exploit: submit holder cannot grant or revoke submit", client(submitA), []api.Grant{submitA}, false},
 		// Exploit: any role holder could grant that role to any principal.
 		grantCase{"exploit: view_all holder cannot hand it on", user(viewA), []api.Grant{viewA}, false},
+		grantCase{"read_all holder cannot hand it on", user(readA), []api.Grant{readA}, false},
+		grantCase{"queue_admin + read_all holder still cannot grant read_all", user(qaA, readA), []api.Grant{readA}, false},
 		grantCase{"exploit: delete_all holder cannot hand it on", client(deleteA), []api.Grant{deleteA}, false},
 		grantCase{"exploit: client_admin cannot re-grant client_admin", client(caAll), []api.Grant{caAll}, false},
 		grantCase{"exploit: client_admin cannot hand out held grants", client(caAll, submitA), []api.Grant{submitA}, false},
@@ -103,6 +109,7 @@ func TestCanDelegateAtCreation(t *testing.T) {
 	runGrantCases(t, CanDelegateAtCreation, append(append([]grantCase{}, commonGrantCases...),
 		grantCase{"client_admin hands out held grants", client(caAll, submitA), []api.Grant{submitA}, true},
 		grantCase{"client_admin may re-grant client_admin", client(caAll), []api.Grant{caAll}, true},
+		grantCase{"client_admin re-delegates a held read_all (no escalation)", client(caAll, readA), []api.Grant{readA}, true},
 		grantCase{"queue_admin may re-delegate its own queue_admin", user(qaA), []api.Grant{qaA}, true},
 		grantCase{"held plus queue_admin rule combine", user(qaA, g(api.RoleSubmit, "queue:B")),
 			[]api.Grant{viewA, g(api.RoleSubmit, "queue:B")}, true},

@@ -27,6 +27,7 @@ func TestAuthMatrix(t *testing.T) {
 	owner := h.client(submitOn("public"))
 	stranger := h.client(submitOn("public"))
 	viewer := h.client(api.Grant{Role: api.RoleViewAll, Scope: "queue:public"})
+	reader := h.client(api.Grant{Role: api.RoleReadAll, Scope: "queue:public"})
 	privateOnly := h.client(submitOn("private"))
 	noGrants := h.client()
 	wid, wtok := h.activeWorker(api.WorkerFacts{}, "public")
@@ -69,7 +70,10 @@ func TestAuthMatrix(t *testing.T) {
 		{"no grants reads", "GET", jobPath, noGrants, 404, api.ProblemNotFound},
 		{"unknown job", "GET", "/job/0193aaaa-0000-7000-8000-000000000000", h.admin, 404, api.ProblemNotFound},
 		{"viewer deletes", "DELETE", jobPath, viewer, 403, api.ProblemForbidden},
-		{"viewer not done", "GET", jobPath + "/transcript", viewer, 409, api.ProblemNotDone},
+		{"viewer transcript", "GET", jobPath + "/transcript", viewer, 403, api.ProblemForbidden},
+		{"viewer result", "GET", jobPath + "/result", viewer, 403, api.ProblemForbidden},
+		{"reader not done", "GET", jobPath + "/transcript", reader, 409, api.ProblemNotDone},
+		{"reader deletes", "DELETE", jobPath, reader, 403, api.ProblemForbidden},
 		// Queue access.
 		{"no grants list", "GET", "/queue/public", noGrants, 403, api.ProblemForbidden},
 		{"other queue list", "GET", "/queue/public", privateOnly, 403, api.ProblemForbidden},

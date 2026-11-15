@@ -117,7 +117,7 @@ func (u *UI) handleQueue(w http.ResponseWriter, r *http.Request, rc *reqCtx) err
 		if v.Grants, err = u.queueGrants(ctx, rc, q); err != nil {
 			return err
 		}
-		for _, role := range []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleDeleteAll} {
+		for _, role := range []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll} {
 			if auth.CanGrantTo(rc.P.Principal, []api.Grant{{Role: role, Scope: auth.QueueScope(q.Name)}}) == nil {
 				v.GrantRoles = append(v.GrantRoles, role)
 			}
@@ -151,7 +151,7 @@ func (u *UI) queueJobs(r *http.Request, rc *reqCtx, q *store.Queue, v *queueView
 	}
 	now := u.srv.Now()
 	for i := range jobs {
-		v.Jobs = append(v.Jobs, jobs[i].API(now))
+		v.Jobs = append(v.Jobs, server.JobDocument(rc.P.Principal, &jobs[i], now))
 	}
 	if next != "" {
 		p := url.Values{"cursor": {next}}
@@ -184,7 +184,7 @@ func (u *UI) queueGrants(ctx context.Context, rc *reqCtx, q *store.Queue) ([]gra
 	}
 	var out []grantRow
 	scope := auth.QueueScope(q.Name)
-	for _, role := range []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleDeleteAll, api.RoleProcess} {
+	for _, role := range []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll, api.RoleProcess} {
 		ps, err := st.PrincipalsWithRole(ctx, role, store.QueueScope(q.ID))
 		if err != nil {
 			return nil, err

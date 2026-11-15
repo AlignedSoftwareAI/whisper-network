@@ -106,6 +106,7 @@ const (
 	RoleClientAdmin Role = "client_admin"
 	RoleSubmit      Role = "submit"
 	RoleViewAll     Role = "view_all"
+	RoleReadAll     Role = "read_all"
 	RoleDeleteAll   Role = "delete_all"
 	RoleProcess     Role = "process"
 )

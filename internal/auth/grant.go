@@ -20,7 +20,9 @@ func (e *ForbiddenError) Error() string { return "forbidden: " + e.Reason }
 // Is makes errors.Is(err, ErrForbidden) true.
 func (e *ForbiddenError) Is(target error) bool { return target == ErrForbidden }
 
-// queueGrantable reports the roles a queue_admin may hand out on its own queue.
+// queueGrantable reports the roles a queue_admin may hand out on its own
+// queue. read_all is deliberately absent: queue_admin does not itself read
+// transcripts, so it may not hand that power out (admin only).
 func queueGrantable(r api.Role) bool {
 	switch r {
 	case api.RoleSubmit, api.RoleViewAll, api.RoleDeleteAll, api.RoleProcess:
@@ -37,7 +39,8 @@ func queueGrantable(r api.Role) bool {
 //   - admin may grant anything;
 //   - queue_admin on queue X may grant submit, view_all, delete_all and
 //     process on queue:X, but not queue_admin itself, so queue admins cannot
-//     create or remove other queue admins;
+//     create or remove other queue admins, nor read_all, which it does
+//     not hold by virtue of being queue admin;
 //   - worker_admin on "*" may grant the worker-scoped lifecycle grant
 //     worker_admin on "worker:<id>".
 //

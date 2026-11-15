@@ -21,9 +21,12 @@ func Can(p Principal, a Action, r Resource) bool {
 		return admin || p.onQueue(api.RoleSubmit, r.Queue)
 	case ActListQueue:
 		return VisibilityOn(p, r.Queue) != SeesNone
-	case ActViewJob, ActDownloadTranscript:
-		return admin || isOwner(p, r) ||
-			p.onQueue(api.RoleViewAll, r.Queue) || p.onQueue(api.RoleQueueAdmin, r.Queue)
+	case ActViewJob:
+		return admin || isOwner(p, r) || VisibilityOn(p, r.Queue) == SeesAll
+	case ActViewJobContent, ActDownloadTranscript:
+		// Content is separate from visibility: view_all and queue_admin
+		// see every job's status but not what is in it.
+		return admin || isOwner(p, r) || p.onQueue(api.RoleReadAll, r.Queue)
 	case ActDeleteJob:
 		return admin || isOwner(p, r) ||
 			p.onQueue(api.RoleDeleteAll, r.Queue) || p.onQueue(api.RoleQueueAdmin, r.Queue)
@@ -78,13 +81,14 @@ const (
 )
 
 // VisibilityOn returns which jobs of queue p may list (DESIGN.md §5.3): all
-// for admin, queue_admin or view_all; its own for submit; otherwise none.
-// Workers never see jobs.
+// for admin, queue_admin, view_all or read_all (a reader may see what it may
+// read); its own for submit; otherwise none. Workers never see jobs.
 func VisibilityOn(p Principal, queue string) Visibility {
 	if p.Kind != KindUser && p.Kind != KindClient {
 		return SeesNone
 	}
-	if p.isAdmin() || p.onQueue(api.RoleQueueAdmin, queue) || p.onQueue(api.RoleViewAll, queue) {
+	if p.isAdmin() || p.onQueue(api.RoleQueueAdmin, queue) ||
+		p.onQueue(api.RoleViewAll, queue) || p.onQueue(api.RoleReadAll, queue) {
 		return SeesAll
 	}
 	if p.onQueue(api.RoleSubmit, queue) {

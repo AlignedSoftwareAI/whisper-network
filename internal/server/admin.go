@@ -23,8 +23,9 @@ package server
 //	                                       api.AuditList, newest first           admin
 //
 // Granting and revoking follow auth.CanGrantTo: admin, or queue_admin on X
-// for submit/view_all/delete_all/process on queue:X, or worker_admin "*" for
-// worker_admin "worker:<id>". Holding a role is not enough to hand it on.
+// for submit/view_all/delete_all/process on queue:X (never read_all, which
+// only admin grants), or worker_admin "*" for worker_admin "worker:<id>".
+// Holding a role is not enough to hand it on.
 //
 // Queue changes go through PATCH /queue/{q} and clients through
 // POST/GET/DELETE /client (DESIGN.md §6.1).

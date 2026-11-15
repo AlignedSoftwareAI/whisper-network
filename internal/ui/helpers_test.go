@@ -212,6 +212,12 @@ func (e *env) submit(token, queue, label string) api.Job {
 // submitAudio uploads seconds of canonical audio as a job.
 func (e *env) submitAudio(token, queue, label string, seconds float64) api.Job {
 	e.t.Helper()
+	return e.submitParams(token, queue, api.JobParams{Model: "small.en", Label: label}, seconds)
+}
+
+// submitParams uploads seconds of canonical audio as a job with params.
+func (e *env) submitParams(token, queue string, params api.JobParams, seconds float64) api.Job {
+	e.t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	ph := textproto.MIMEHeader{}
@@ -219,7 +225,7 @@ func (e *env) submitAudio(token, queue, label string, seconds float64) api.Job {
 	ph.Set("Content-Type", "application/json")
 	pw, err := mw.CreatePart(ph)
 	require.NoError(e.t, err)
-	require.NoError(e.t, json.NewEncoder(pw).Encode(api.JobParams{Model: "small.en", Label: label}))
+	require.NoError(e.t, json.NewEncoder(pw).Encode(params))
 	fw, err := mw.CreateFormFile("media", "in.wav")
 	require.NoError(e.t, err)
 	_, err = fw.Write(canonicalWAV(seconds))
