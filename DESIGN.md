@@ -821,7 +821,7 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--metrics-push-url` / `--metrics-push-interval` / `--metrics-labels` | — / 15s / — | |
 | `--debug` / `--quiet` / `--output-format` | off / off / `auto` | Template flags (§10.1) |
 | `--data` | `/data` | SQLite file plus `blobs/`, `models/` |
-| `--public-url` | derived from request | Used in `Location` headers |
+| `--public-url` | unset (relative paths) | External base URL for `Location` headers and `/llms.txt`. Never applied to the worker protocol: lease `input_url`s stay relative so workers may reach the server at a different address |
 | `--tls-cert/--tls-key` | — | If unset, plain HTTP; the server logs a warning when not bound to localhost |
 | `--require-tls` | off | Refuse to start without TLS |
 | `--trust-proxy` | off | Trust `X-Forwarded-For` (rightmost entry) for rate limiting and audit; only behind a proxy that sets it |

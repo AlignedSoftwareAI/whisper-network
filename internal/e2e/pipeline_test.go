@@ -14,6 +14,8 @@ import (
 	"github.com/deweysasser/whisper-network/internal/e2e/e2etest"
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/obs/obstest"
+	"github.com/deweysasser/whisper-network/internal/server"
+	"github.com/deweysasser/whisper-network/internal/store"
 	"github.com/deweysasser/whisper-network/internal/worker/workertest"
 )
 
@@ -122,3 +124,21 @@ func TestCanonicalSplitAcrossTwoWorkers(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// TestWorkerOnAnotherAddressThanPublicURL: with --public-url set to the
+// address clients use (here an unreachable proxy name), a worker that
+// reaches the server directly still downloads its input and finishes the
+// job, because lease input URLs stay relative to the worker's own --server
+// (issue #29).
+func TestWorkerOnAnotherAddressThanPublicURL(t *testing.T) {
+	t.Parallel()
+	e := e2etest.New(t, func(c *server.Config, _ *store.Config) {
+		c.PublicURL = "https://wn-proxy.invalid"
+	})
+	w := e.StartWorker("direct")
+	e.Approve(w.ID(), "public")
+	sub := e.Submitter("public")
+	job := e.Submit(sub, "public", api.JobParams{}, e2etest.SpeechWAV(2))
+	done := e.WaitJob(job.ID, api.JobDone)
+	assert.Equal(t, 0, done.Tasks.Failed, "no attempt failed on the input URL")
+}

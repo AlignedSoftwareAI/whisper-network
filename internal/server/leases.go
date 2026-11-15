@@ -145,9 +145,14 @@ func (s *Server) leased(l *store.Lease) {
 }
 
 // leaseAPI builds the claim response, adding model and VAD hashes.
+//
+// input_url stays relative: the worker resolves it against its own --server
+// base, which may legitimately differ from --public-url (a worker on the
+// server's host or private network reaching it directly while clients use a
+// proxy). The worker refuses absolute URLs on another origin, so making
+// this absolute would break every such worker (issue #29).
 func (s *Server) leaseAPI(l *store.Lease) api.Lease {
 	out := l.API(s.cfg.HeartbeatInterval)
-	out.InputURL = s.publicURL(out.InputURL)
 	if l.Kind == api.KindTranscribe {
 		if m, err := s.lookupModel(l.Model); err == nil {
 			out.ModelSHA256 = m.SHA256
