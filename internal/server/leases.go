@@ -104,6 +104,17 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request, p *Principa
 		if lease != nil {
 			s.metrics.ClaimWait(time.Since(start))
 			s.leased(lease)
+			if s.afterClaim != nil {
+				s.afterClaim(ctx)
+			}
+			if ctx.Err() != nil {
+				// The worker disconnected (typically shutting down) while the
+				// claim committed, so it will never learn of this lease. Release
+				// it now: the task requeues at once with no attempt consumed,
+				// instead of waiting out the lease TTL and burning an attempt.
+				s.releaseOrphan(context.WithoutCancel(ctx), lease, wk.ID)
+				return nil
+			}
 			writeJSON(w, http.StatusCreated, s.leaseAPI(lease))
 			return nil
 		}
@@ -213,6 +224,22 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request, p *Princi
 	s.leaseEnded(r.Context(), end)
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// releaseOrphan releases a lease granted to a worker that disconnected before
+// it could receive it. A remaining window, after the response reaches the
+// kernel but before the worker reads it, is covered by lease expiry.
+func (s *Server) releaseOrphan(ctx context.Context, l *store.Lease, workerID string) {
+	end, err := s.st.Release(ctx, l.ID, workerID)
+	if err != nil {
+		s.log.Warn().Err(err).Str(obs.FieldLeaseID, l.ID).Msg("could not release a lease the worker never received")
+		return
+	}
+	obs.Info(&s.log, obs.EventLeaseReleased).Str(obs.FieldLeaseID, end.LeaseID).Str(obs.FieldJobID, end.JobID).
+		Int(obs.FieldTaskSeq, end.Seq).Str(obs.FieldWorkerID, workerID).Int(obs.FieldAttempt, end.Attempt).
+		Str(obs.FieldReason, "worker disconnected before receiving the lease").
+		Msg("lease released")
+	s.leaseEnded(ctx, end)
 }
 
 // leaseEnded does the bookkeeping common to every non-success lease end:

@@ -378,3 +378,42 @@ func TestServeCancelledDuringStartup(t *testing.T) {
 	cancel()
 	assert.NoError(t, srv.Serve(ctx, ln, nil))
 }
+
+// TestClaimReleasedWhenWorkerDisconnects: a worker that disconnects while its
+// claim commits never sees the lease, so the server releases it at once: the
+// task is pending again with no attempt consumed, and another claim gets it.
+func TestClaimReleasedWhenWorkerDisconnects(t *testing.T) {
+	h := newHarness(t)
+	client := h.client(submitOn("public"))
+	wid, wtok := h.activeWorker(api.WorkerFacts{}, "public")
+	job := h.submit(client, "public", api.JobParams{Model: "small.en"}, canonicalWAV(speech(1, media.SampleRate)))
+
+	ctx, cancel := context.WithCancel(h.ctx)
+	// The worker goes away right after the commit. net/http notices a
+	// disconnect asynchronously, so wait until the server has seen it.
+	h.srv.afterClaim = func(reqCtx context.Context) {
+		cancel()
+		select {
+		case <-reqCtx.Done():
+		case <-time.After(5 * time.Second):
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", h.ts.URL+"/worker/"+wid+"/leases", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+wtok)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	h.srv.afterClaim = nil
+
+	require.Eventually(t, func() bool {
+		j := h.job(job.ID)
+		return j.Tasks.Pending == 1 && j.Tasks.Leased == 0
+	}, 5*time.Second, 20*time.Millisecond, "orphaned lease released and the task requeued")
+	assert.Contains(t, string(h.logs.Bytes()), "worker disconnected before receiving the lease")
+
+	l := h.claim(wid, wtok, "", nil)
+	require.NotNil(t, l, "the task is claimable again at once")
+	assert.Equal(t, job.ID, l.Job)
+	assert.Equal(t, 1, h.job(job.ID).Tasks.Leased)
+}

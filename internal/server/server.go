@@ -320,6 +320,11 @@ func (r realTicker) Stop()               { r.t.Stop() }
 
 // Server is the coordination server. Create it with New.
 type Server struct {
+	// afterClaim, if set, runs after a claim commits and before the response
+	// is written, with the request context. Tests use it to simulate a worker
+	// disconnecting there.
+	afterClaim func(ctx context.Context)
+
 	cfg         Config
 	st          *store.Store
 	blobs       *blobs.Store
