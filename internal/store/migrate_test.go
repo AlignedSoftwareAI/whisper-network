@@ -12,7 +12,7 @@ import (
 )
 
 // TestMigrationReadAll: upgrading a database from before read_all (schema
-// 2) gives every view_all and queue_admin grant on a queue a matching
+// 4) gives every view_all and queue_admin grant on a queue a matching
 // read_all grant, so those principals keep the transcript access they had.
 // Other grants are untouched, and an existing read_all is not duplicated.
 func TestMigrationReadAll(t *testing.T) {
@@ -39,15 +39,17 @@ func TestMigrationReadAll(t *testing.T) {
 		require.NoError(t, f.s.AddGrant(f.ctx, r.principal, r.role, r.scope, "user:granter"))
 	}
 
-	// Rewind to the schema before read_all and reopen: 0003 runs again on
-	// these rows exactly as it would on an upgraded deployment.
-	_, err := f.s.w.ExecContext(f.ctx, "PRAGMA user_version = 2")
+	// Rewind to the schema before read_all (version 4) and reopen: 0005
+	// runs again on these rows exactly as it would on an upgraded
+	// deployment. The read_all migration is data-only, so nothing else needs
+	// undoing.
+	_, err := f.s.w.ExecContext(f.ctx, "PRAGMA user_version = 4")
 	require.NoError(t, err)
 	require.NoError(t, f.s.Close())
 	s := f.open()
 	v, err := s.SchemaVersion(f.ctx)
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, v, 3)
+	require.GreaterOrEqual(t, v, 5)
 
 	held := func(principal string) []api.Grant {
 		gs, err := s.GrantsFor(f.ctx, principal)
