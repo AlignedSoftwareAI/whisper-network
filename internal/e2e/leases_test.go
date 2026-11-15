@@ -200,9 +200,19 @@ func TestWorkerRestartKeepsIdentity(t *testing.T) {
 	sub := e.Submitter("public")
 	job := e.Submit(sub, "public", api.JobParams{}, e2etest.SpeechWAV(2))
 	e.WaitJob(job.ID, api.JobDone)
+	// The worker reported gauges. Which report is latest depends on timing:
+	// a heartbeat during the task says one slot is busy, an idle claim
+	// long-poll after it says none, so SlotsBusy is only checked for range.
+	// The disk gauges are on every report.
 	g := e.WorkerByDescription("restarting").Gauges
-	require.NotNil(t, g, "heartbeats carried gauges")
-	assert.Equal(t, 1, g.SlotsBusy)
+	require.NotNil(t, g, "the worker reported gauges")
+	assert.GreaterOrEqual(t, g.SlotsBusy, 0)
+	assert.LessOrEqual(t, g.SlotsBusy, 1, "one slot configured")
+	assert.NotNil(t, g.ModelsBytes, "disk gauges reported")
+	assert.NotNil(t, g.WorkBytes, "disk gauges reported")
+	if assert.NotNil(t, g.StateFreeBytes, "disk gauges reported") {
+		assert.Positive(t, *g.StateFreeBytes)
+	}
 	require.NoError(t, first.Stop())
 
 	second := e.StartWorker("restarting", func(c *worker.Config) { c.StateDir = state; c.Slots = 2 })
