@@ -159,11 +159,16 @@ func TestPruneRejectedWorkerReturnsAndDeletesStats(t *testing.T) {
 }
 
 // rollBackToV2 makes the database look as it did at schema version 2
-// (undoing every later migration: 0003 worker_stats and 0004's index), then
-// reopens it so migrations 3 onward, including the backfill, run again.
+// (undoing every later migration: 0003 worker_stats, 0004's index and 0006's
+// heartbeat_at column; 0005 read_all only adds grants and re-runs safely),
+// then reopens it so migrations 3 onward, including the backfill, run again.
 func (f *fixture) rollBackToV2() {
 	f.t.Helper()
-	_, err := f.s.w.ExecContext(f.ctx, `DROP TABLE worker_stats; DROP INDEX IF EXISTS leases_task_failures; PRAGMA user_version = 2`)
+	_, err := f.s.w.ExecContext(f.ctx, `
+		DROP TABLE worker_stats;
+		DROP INDEX IF EXISTS leases_task_failures;
+		ALTER TABLE leases DROP COLUMN heartbeat_at;
+		PRAGMA user_version = 2`)
 	require.NoError(f.t, err)
 	require.NoError(f.t, f.s.Close())
 	f.s = f.open()

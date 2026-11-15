@@ -41,15 +41,17 @@ func TestMigrationReadAll(t *testing.T) {
 
 	// Rewind to the schema before read_all (version 4) and reopen: 0005
 	// runs again on these rows exactly as it would on an upgraded
-	// deployment. The read_all migration is data-only, so nothing else needs
-	// undoing.
-	_, err := f.s.w.ExecContext(f.ctx, "PRAGMA user_version = 4")
+	// deployment. The read_all migration is data-only; 0006 then re-adds
+	// leases.heartbeat_at, so that column is dropped first.
+	_, err := f.s.w.ExecContext(f.ctx, `
+		ALTER TABLE leases DROP COLUMN heartbeat_at;
+		PRAGMA user_version = 4`)
 	require.NoError(t, err)
 	require.NoError(t, f.s.Close())
 	s := f.open()
 	v, err := s.SchemaVersion(f.ctx)
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, v, 5)
+	require.GreaterOrEqual(t, v, 6)
 
 	held := func(principal string) []api.Grant {
 		gs, err := s.GrantsFor(f.ctx, principal)
