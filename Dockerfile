@@ -8,7 +8,11 @@
 # ecosystem updates the tag and digest together.
 # GO_VERSION is informational; the golang base image tag below is what is used.
 ARG GO_VERSION=1.27.4
-ARG WHISPER_VERSION=v1.9.5
+# The whisper.cpp release, without the leading v. Its tagged source reports
+# itself as "<release>-dev", so the worker image states the release
+# explicitly (WHISPER_ENGINE_VERSION below) for transcript provenance.
+ARG WHISPER_RELEASE=1.9.5
+ARG WHISPER_VERSION=v${WHISPER_RELEASE}
 # Commit that WHISPER_VERSION must resolve to (guards against a moved tag).
 ARG WHISPER_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 
@@ -75,6 +79,7 @@ CMD ["server"]
 
 # ---------------------------------------------------------------------------
 FROM debian AS worker
+ARG WHISPER_RELEASE
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
@@ -84,6 +89,10 @@ RUN apt-get update \
 # sandbox grants read access to that directory.
 COPY --from=whisper /opt/whisper/ /opt/whisper/
 ENV PATH=/opt/whisper:$PATH
+# Reported in worker facts and transcript provenance instead of whisper-cli's
+# own "-dev" version string. The whisper stage verified that the source is
+# exactly this release's tagged commit (WHISPER_COMMIT).
+ENV WHISPER_ENGINE_VERSION="whisper.cpp ${WHISPER_RELEASE}"
 RUN echo /opt/whisper > /etc/ld.so.conf.d/whisper.conf && ldconfig \
  && whisper-cli --version && ffmpeg -version | head -1
 COPY --from=builder /out/whisper-network /usr/local/bin/whisper-network
