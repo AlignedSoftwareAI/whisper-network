@@ -13,7 +13,7 @@ Every request needs a client token issued by an operator of this server:
 You cannot obtain a token through the API without already holding one with client-admin rights. If you have no token, ask the operator. Do not log or echo the token.
 
 - `401` means the token is missing, malformed or revoked.
-- `403` means the token is valid but lacks the permission (for example, no `submit` grant on that queue).
+- `403` means the token is valid but lacks the permission (for example, no `submit` grant on that queue). A `403` on a job's transcript or result means you can see that job but your token may not read its content; only the job's creator, or a token with read permission on the queue, can.
 - `404` on a job means it does not exist **or** you are not allowed to see it; the two are deliberately indistinguishable.
 
 ## Submit a job
@@ -35,7 +35,7 @@ Any common audio or video format is accepted; the server converts it. The queue 
 | `prompt` | no | Up to {{.MaxPrompt}} characters of context, written as **sentences**, naming people likely to speak, e.g. "This is a project planning meeting. Alice Chen and Bob Rivera discuss the launch schedule." A bare comma-separated list of names makes the transcript worse. |
 | `label` | no | A short name for the job, up to {{.MaxLabel}} characters. |
 | `source` | no | Where the media came from (a URL or ID). Recorded only; the server never fetches it. |
-| `metadata` | no | Any JSON object up to {{.MaxMetadata}} bytes, returned with the job. Do not put secrets in it. |
+| `metadata` | no | Any JSON object up to {{.MaxMetadata}} bytes, returned with the job to you and to tokens that may read the queue's transcripts (others see the job without it). Do not put secrets in it. |
 
 Send an `Idempotency-Key` header with a value unique to this submission (for example your own job ID). If the upload fails and you retry with the same key, you get the original job back instead of a duplicate.
 

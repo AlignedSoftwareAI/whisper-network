@@ -188,3 +188,34 @@ func TestWorkerAdminGrantsScopedWorkerAdmin(t *testing.T) {
 		Role: api.RoleWorkerAdmin, Scope: "*"})
 	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
 }
+
+// TestOnlyAdminGrantsReadAll: read_all is granted and revoked by admin
+// only. A queue admin, which does not itself read transcripts, may neither
+// grant it, revoke it, nor mint a client holding it; a client_admin may hand
+// on a read_all it holds when creating a client (re-delegation, no
+// escalation).
+func TestOnlyAdminGrantsReadAll(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	readPublic := api.Grant{Role: api.RoleReadAll, Scope: "queue:public"}
+	_, qa := h.newClient(qaPublic, clientAdmin)
+	target, _ := h.newClient()
+	add := api.PrincipalGrant{Principal: "client:" + target, Role: api.RoleReadAll, Scope: "queue:public"}
+
+	resp, b := h.call("POST", "/admin/grants", qa, add)
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	resp, b = h.call("POST", "/client", qa, api.CreateClientRequest{Name: "r", Grants: []api.Grant{readPublic}})
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	assert.Empty(t, h.wireGrants("client:"+target))
+
+	h.expect("POST", "/admin/grants", h.admin, add, http.StatusNoContent, nil)
+	assert.Equal(t, []api.Grant{readPublic}, h.wireGrants("client:"+target))
+	resp, b = h.call("DELETE", revokePath("client:"+target, readPublic), qa, nil)
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	h.expect("DELETE", revokePath("client:"+target, readPublic), h.admin, nil, http.StatusNoContent, nil)
+	assert.Empty(t, h.wireGrants("client:"+target))
+
+	_, holder := h.newClient(clientAdmin, readPublic)
+	h.expect("POST", "/client", holder, api.CreateClientRequest{Name: "delegate", Grants: []api.Grant{readPublic}},
+		http.StatusCreated, nil)
+}

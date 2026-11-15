@@ -37,12 +37,25 @@ func (s *Server) visibleJob(r *http.Request, p *Principal, act auth.Action) (*st
 	return j, nil
 }
 
+// JobDocument builds the job status document as p may see it. The
+// client-supplied content (prompt and metadata) is left out unless p may
+// read the job (auth.ActViewJobContent: its owner, read_all on its queue, or
+// admin); view_all and queue_admin alone see status only. The caller must
+// already have checked that p may see the job at all.
+func JobDocument(p auth.Principal, j *store.Job, now time.Time) api.Job {
+	doc := j.API(now)
+	if !auth.Can(p, auth.ActViewJobContent, auth.Resource{Queue: j.QueueName, OwnerID: j.ClientID}) {
+		doc.Prompt, doc.Metadata = "", nil
+	}
+	return doc
+}
+
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request, p *Principal) error {
 	j, err := s.visibleJob(r, p, auth.ActViewJob)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, j.API(s.now()))
+	writeJSON(w, http.StatusOK, JobDocument(p.Principal, j, s.now()))
 	return nil
 }
 
@@ -91,7 +104,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, p *Princ
 	out := api.JobList{Jobs: make([]api.Job, len(jobs)), NextCursor: next}
 	now := s.now()
 	for i := range jobs {
-		out.Jobs[i] = jobs[i].API(now)
+		out.Jobs[i] = JobDocument(p.Principal, &jobs[i], now)
 	}
 	writeJSON(w, http.StatusOK, out)
 	return nil

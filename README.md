@@ -247,9 +247,24 @@ reports `full`, `fs-only` or `none`. `--prepare-min-sandbox` on the server
 decides which levels may receive prepare tasks (ffmpeg on untrusted media);
 transcribe tasks go to any level because their input is server-generated WAV.
 
-**Roles.** `admin`, `queue_admin`, `worker_admin`, `submit`, `view_all`,
-`delete_all`, `client_admin`, `process`. Grants are `role=scope` with scope `*`,
-`queue:<name>` or `worker:<id>`. Details: DESIGN.md section 5.
+**Roles.** Grants are `role=scope` with scope `*`, `queue:<name>` or
+`worker:<id>`. Details: DESIGN.md section 5.
+
+| Role | Scope | Allows |
+|---|---|---|
+| `admin` | `*` | Everything |
+| `queue_admin` | `queue:X` | Approve workers for X; grant `submit`, `view_all`, `delete_all`, `process` on X; list jobs and read their status; delete any job. Not transcripts |
+| `worker_admin` | `*` or `worker:<id>` | Approve, pause, resume and reject workers |
+| `client_admin` | `*` | Create and revoke API clients |
+| `submit` | `queue:X` | Create jobs; see, read and delete its own |
+| `view_all` | `queue:X` | List every job and read its status (no prompt, metadata, transcript or result) |
+| `read_all` | `queue:X` | Read every job's transcript, result, prompt and metadata; implies `view_all`. Granted by admin only |
+| `delete_all` | `queue:X` | Delete any job |
+| `process` | `queue:X` | Workers: lease tasks from X |
+
+Upgrading from a release without `read_all` gives every existing `view_all` and
+`queue_admin` grant a matching `read_all` grant, so access is unchanged until
+you revoke them.
 
 ## API overview
 

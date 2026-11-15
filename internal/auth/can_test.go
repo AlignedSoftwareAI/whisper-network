@@ -26,6 +26,7 @@ var (
 	caAll    = g(api.RoleClientAdmin, "*")
 	submitA  = g(api.RoleSubmit, "queue:A")
 	viewA    = g(api.RoleViewAll, "queue:A")
+	readA    = g(api.RoleReadAll, "queue:A")
 	deleteA  = g(api.RoleDeleteAll, "queue:A")
 	processA = g(api.RoleProcess, "queue:A")
 )
@@ -50,6 +51,7 @@ func TestCanMatrix(t *testing.T) {
 		{"admin list", user(admin), ActListQueue, qB, true},
 		{"admin view foreign job", user(admin), ActViewJob, jobA("x"), true},
 		{"admin download", user(admin), ActDownloadTranscript, jobB, true},
+		{"admin content", user(admin), ActViewJobContent, jobB, true},
 		{"admin delete", user(admin), ActDeleteJob, jobB, true},
 		{"admin patch desc", user(admin), ActPatchQueueDescription, qA, true},
 		{"admin patch max upload", user(admin), ActPatchQueueMaxUpload, qA, true},
@@ -78,7 +80,9 @@ func TestCanMatrix(t *testing.T) {
 		{"qa list A", user(qaA), ActListQueue, qA, true},
 		{"qa list B denied", user(qaA), ActListQueue, qB, false},
 		{"qa view foreign job on A", user(qaA), ActViewJob, jobA("x"), true},
-		{"qa download foreign job on A", user(qaA), ActDownloadTranscript, jobA("x"), true},
+		{"qa does NOT download foreign job on A", user(qaA), ActDownloadTranscript, jobA("x"), false},
+		{"qa does NOT see foreign job content on A", user(qaA), ActViewJobContent, jobA("x"), false},
+		{"qa+read_all downloads foreign job on A", user(qaA, readA), ActDownloadTranscript, jobA("x"), true},
 		{"qa view job on B denied", user(qaA), ActViewJob, jobB, false},
 		{"qa delete job on A", user(qaA), ActDeleteJob, jobA("x"), true},
 		{"qa delete job on B denied", user(qaA), ActDeleteJob, jobB, false},
@@ -135,7 +139,18 @@ func TestCanMatrix(t *testing.T) {
 		{"submit cannot set weight", client(submitA), ActSetQueueWeight, qA, false},
 		{"submit cannot create client", client(submitA), ActCreateClient, Resource{}, false},
 		{"viewall view other's A", client(viewA), ActViewJob, jobA("c2"), true},
-		{"viewall download other's A", client(viewA), ActDownloadTranscript, jobA("c2"), true},
+		{"viewall does NOT download other's A", client(viewA), ActDownloadTranscript, jobA("c2"), false},
+		{"viewall does NOT see other's content A", client(viewA), ActViewJobContent, jobA("c2"), false},
+		{"readall list A", client(readA), ActListQueue, qA, true},
+		{"readall view other's A", client(readA), ActViewJob, jobA("c2"), true},
+		{"readall content of other's A", client(readA), ActViewJobContent, jobA("c2"), true},
+		{"readall download other's A", client(readA), ActDownloadTranscript, jobA("c2"), true},
+		{"readall B denied", client(readA), ActDownloadTranscript, jobB, false},
+		{"readall view B denied", client(readA), ActViewJob, jobB, false},
+		{"readall cannot submit", client(readA), ActSubmitJob, qA, false},
+		{"readall cannot delete other's", client(readA), ActDeleteJob, jobA("c2"), false},
+		{"submit content own", client(submitA), ActViewJobContent, jobA("c1"), true},
+		{"submit content other's denied", client(submitA), ActViewJobContent, jobA("c2"), false},
 		{"viewall B denied", client(viewA), ActViewJob, jobB, false},
 		{"viewall list A", client(viewA), ActListQueue, qA, true},
 		{"viewall cannot submit", client(viewA), ActSubmitJob, qA, false},
@@ -145,6 +160,8 @@ func TestCanMatrix(t *testing.T) {
 		{"deleteall cannot view other's", client(deleteA), ActViewJob, jobA("c2"), false},
 		{"deleteall cannot list", client(deleteA), ActListQueue, qA, false},
 		{"owner view with no grants", client(), ActViewJob, jobA("c1"), true},
+		{"owner content with no grants", client(), ActViewJobContent, jobA("c1"), true},
+		{"owner download with no grants", client(), ActDownloadTranscript, jobA("c1"), true},
 		{"owner delete with no grants", client(), ActDeleteJob, jobA("c1"), true},
 		{"empty id never owns empty owner", Principal{Kind: KindClient}, ActViewJob, Resource{Queue: "A"}, false},
 		{"empty grants cannot submit", client(), ActSubmitJob, qA, false},
@@ -166,6 +183,7 @@ func TestCanMatrix(t *testing.T) {
 		{"submit with * scope ignored", client(g(api.RoleSubmit, "*")), ActSubmitJob, qA, false},
 		{"unknown role ignored", user(g("root", "*")), ActCreateQueue, Resource{}, false},
 		{"queue prefix collision", client(g(api.RoleSubmit, "queue:AB")), ActSubmitJob, qA, false},
+		{"read_all with * scope ignored", client(g(api.RoleReadAll, "*")), ActDownloadTranscript, jobA("c2"), false},
 
 		// --- workers ---
 		{"worker lease A", worker(processA), ActLeaseTask, qA, true},
@@ -181,6 +199,7 @@ func TestCanMatrix(t *testing.T) {
 		{"worker cannot list", worker(processA), ActListQueue, qA, false},
 		{"worker cannot view job", worker(processA), ActViewJob, jobA("w1"), false},
 		{"worker cannot download", worker(processA), ActDownloadTranscript, jobA("w1"), false},
+		{"worker with read_all cannot download", worker(readA), ActDownloadTranscript, jobA("x"), false},
 		{"worker cannot delete job", worker(processA), ActDeleteJob, jobA("w1"), false},
 		{"worker cannot approve self", worker(waAll), ActApproveWorker, w1, false},
 		{"worker cannot grant process", worker(qaA), ActGrantProcess, qA, false},
@@ -221,6 +240,8 @@ func TestVisibilityOn(t *testing.T) {
 		{"queue_admin", client(qaA), "A", SeesAll},
 		{"queue_admin other queue", client(qaA), "B", SeesNone},
 		{"view_all", client(viewA), "A", SeesAll},
+		{"read_all implies view_all", client(readA), "A", SeesAll},
+		{"read_all other queue", client(readA), "B", SeesNone},
 		{"submit only", client(submitA), "A", SeesOwn},
 		{"submit + view_all", client(submitA, viewA), "A", SeesAll},
 		{"submit other queue", client(submitA), "B", SeesNone},
@@ -237,10 +258,49 @@ func TestVisibilityOn(t *testing.T) {
 }
 
 func TestVisibilityMatchesListQueue(t *testing.T) {
-	ps := []Principal{user(admin), client(qaA), client(viewA), client(submitA), client(deleteA), worker(processA), client()}
+	ps := []Principal{user(admin), client(qaA), client(viewA), client(readA), client(submitA), client(deleteA), worker(processA), client()}
 	for _, p := range ps {
 		for _, q := range []string{"A", "B", ""} {
 			assert.Equal(t, VisibilityOn(p, q) != SeesNone, Can(p, ActListQueue, Resource{Queue: q}))
 		}
+	}
+}
+
+// TestJobAccessMatrix pins down the split between seeing a job and reading
+// it (issue #38) for every combination of the roles involved, on someone
+// else's job on queue A and on the principal's own job.
+func TestJobAccessMatrix(t *testing.T) {
+	type want struct{ list, view, content, download bool }
+	all, statusOnly, none := want{true, true, true, true}, want{true, true, false, false}, want{}
+	foreign := Resource{Queue: "A", OwnerID: "someone-else"}
+	own := Resource{Queue: "A", OwnerID: "c1"}
+	tests := []struct {
+		name string
+		p    Principal
+		res  Resource
+		want want
+	}{
+		{"owner (submit) own job", client(submitA), own, all},
+		{"owner without grants own job", client(), own, want{false, true, true, true}},
+		{"owner (submit) foreign job", client(submitA), foreign, want{list: true}},
+		{"view_all", client(viewA), foreign, statusOnly},
+		{"read_all", client(readA), foreign, all},
+		{"view_all + read_all", client(viewA, readA), foreign, all},
+		{"queue_admin", user(qaA), foreign, statusOnly},
+		{"queue_admin + read_all", user(qaA, readA), foreign, all},
+		{"admin", user(admin), foreign, all},
+		{"delete_all", client(deleteA), foreign, none},
+		{"no grants", client(), foreign, none},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := want{
+				list:     Can(tc.p, ActListQueue, Resource{Queue: tc.res.Queue}),
+				view:     Can(tc.p, ActViewJob, tc.res),
+				content:  Can(tc.p, ActViewJobContent, tc.res),
+				download: Can(tc.p, ActDownloadTranscript, tc.res),
+			}
+			assert.Equal(t, tc.want, got)
+		})
 	}
 }
