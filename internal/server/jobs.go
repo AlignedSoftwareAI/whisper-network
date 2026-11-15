@@ -125,6 +125,12 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request, p *Prin
 // row goes first: a crash in between leaves an orphan directory that the
 // sweep removes, never a row whose media has vanished.
 func (s *Server) deleteJob(ctx context.Context, actor Actor, jobID string) error {
+	// Hold the job lock so a delete cannot interleave with prepare
+	// acceptance or transcript assembly, which write into the job's blob
+	// directory: either they finish first and their files are removed here,
+	// or the delete wins and they find the job gone.
+	unlock := s.locks.Lock(jobID)
+	defer unlock()
 	cancelled, err := s.ops.DeleteJob(ctx, actor, jobID)
 	if err != nil {
 		return err
