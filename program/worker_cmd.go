@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/VictoriaMetrics/metrics"
@@ -42,6 +43,9 @@ type WorkerCmd struct {
 
 // Run runs the worker until the context is cancelled (SIGINT/SIGTERM).
 func (c *WorkerCmd) Run(ctx context.Context, logger zerolog.Logger) error {
+	if err := workerSupported(runtime.GOOS); err != nil {
+		return err
+	}
 	log := obs.NewLogger(logger, obs.ModeWorker)
 	cl, err := client.New(c.Server, client.WithUserAgent("whisper-network-worker/"+Version),
 		client.WithHTTPClient(&http.Client{}))
@@ -113,4 +117,19 @@ func (c *WorkerCmd) startMetrics(ctx context.Context, log zerolog.Logger) (*obs.
 		}
 	}
 	return m, stop, nil
+}
+
+// errWorkerUnsupported is returned by the worker on platforms where it
+// cannot confine the media tools it runs (ffmpeg and whisper-cli parse
+// untrusted input).
+var errWorkerUnsupported = errors.New("the worker is not supported on Windows: " +
+	"it cannot confine the ffmpeg and whisper-cli child processes there " +
+	"(see https://github.com/deweysasser/whisper-network/issues/26)")
+
+// workerSupported reports whether the worker may run on goos.
+func workerSupported(goos string) error {
+	if goos == "windows" {
+		return errWorkerUnsupported
+	}
+	return nil
 }

@@ -183,7 +183,8 @@ a hardened deployment.
 Release archives for linux, darwin and windows (amd64 and arm64) are attached
 to each GitHub release. Only Linux has been run in a real deployment; the
 macOS and Windows builds compile and run the unit tests in CI but are
-otherwise untested (see [Project status](#project-status)). Or build from
+otherwise untested, and the worker does not run on Windows at all (see
+[Project status](#project-status)). Or build from
 source (Go version from `go.mod`):
 
 ```sh
@@ -491,7 +492,7 @@ Platform support:
 |---|---|
 | Linux, amd64 and arm64 (containers or binaries) | Developed and run on Linux; the real-engine integration test (ffmpeg and whisper.cpp in Docker) passes |
 | macOS (darwin) | **Never run outside CI.** Binaries are built and the unit tests run on GitHub's macOS runners; no real worker or server has been operated on a Mac. No sandbox (level `none`), so no prepare tasks under the default policy |
-| Windows | **Never run outside CI.** Binaries are built and the unit tests run on GitHub's Windows runners; no real worker or server has been operated on Windows. No sandbox, memory is not detected (`--memory` is required), and child processes are not confined |
+| Windows | **Worker not supported**: `whisper-network worker` exits with an error, because the media tools it runs cannot be confined there ([#26](https://github.com/deweysasser/whisper-network/issues/26)). The server and the client CLI (`submit`, `status`, `fetch`) build and pass their unit tests on GitHub's Windows runners but have **never been run outside CI** |
 
 Reports from macOS or Windows use are welcome.
 
