@@ -13,6 +13,9 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /healthz", http.HandlerFunc(s.handleHealthz))
 	mux.Handle("GET /readyz", http.HandlerFunc(s.handleReadyz))
 
+	// Usage guide for LLM agents (llms.txt), unauthenticated.
+	mux.Handle("GET /llms.txt", http.HandlerFunc(s.handleLLMs))
+
 	// Client API (§6.1).
 	mux.Handle("POST /queue/{q}", s.authed(anyHuman, s.handleUpload))
 	mux.Handle("GET /queue/{q}", s.authed(anyHuman, s.handleListJobs))

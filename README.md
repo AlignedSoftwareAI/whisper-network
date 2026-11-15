@@ -253,6 +253,12 @@ transcribe tasks go to any level because their input is server-generated WAV.
 
 ## API overview
 
+Every server also serves **`/llms.txt`**, a Markdown guide to the client API
+(submit, poll, fetch, clean up, errors) written for LLM agents and filled in
+with that server's models, upload limit and retention. Point an agent at
+`https://<your-server>/llms.txt`. It is public and contains no queue names,
+tokens or worker details.
+
 All bodies are JSON unless noted; errors are RFC 9457 `application/problem+json`.
 Client tokens (`wnc_...`) and worker tokens (`wnw_...`) go in
 `Authorization: Bearer`. Full request and response shapes are in
