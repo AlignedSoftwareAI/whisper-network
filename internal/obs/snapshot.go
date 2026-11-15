@@ -78,6 +78,9 @@ type WorkerStat struct {
 	ChildRSSBytes int64
 	Load1         float64
 	CPUThrottled  time.Duration
+	// Disk readings; nil when the worker did not report them (an older
+	// worker, or a failed probe), and then no series is written.
+	ModelsBytes, WorkBytes, StateFreeBytes *int64
 }
 
 // StorageBytes is the stored size per blob kind.
@@ -176,6 +179,20 @@ func (m *Metrics) writeWorkers(w io.Writer, in []WorkerStat) {
 	for _, c := range cols {
 		for _, x := range ws {
 			fmt.Fprintf(w, "%s %g\n", series(c.name, "worker", x.ID), c.val(x))
+		}
+	}
+	for _, c := range []struct {
+		name string
+		val  func(WorkerStat) *int64
+	}{
+		{"whisper_worker_models_bytes", func(x WorkerStat) *int64 { return x.ModelsBytes }},
+		{"whisper_worker_work_bytes", func(x WorkerStat) *int64 { return x.WorkBytes }},
+		{"whisper_worker_state_free_bytes", func(x WorkerStat) *int64 { return x.StateFreeBytes }},
+	} {
+		for _, x := range ws {
+			if v := c.val(x); v != nil {
+				fmt.Fprintf(w, "%s %d\n", series(c.name, "worker", x.ID), *v)
+			}
 		}
 	}
 }

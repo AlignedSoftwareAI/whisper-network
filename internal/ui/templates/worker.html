@@ -23,6 +23,10 @@
     <dt>Kinds</dt><dd>{{range $i, $k := $w.Facts.Kinds}}{{if $i}}, {{end}}{{$k}}{{else}}<span class="muted">none</span>{{end}}</dd>
     <dt>Models</dt><dd>{{with $w.Facts.Models}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>
     <dt>Slots</dt><dd>{{$w.Facts.Slots}}{{with $w.Gauges}} · {{.SlotsBusy}} busy · load {{num .Load1}}{{if .ChildRSSBytes}} · children {{bytes .ChildRSSBytes}} RSS{{end}}{{end}}</dd>
+    {{with $w.Gauges}}{{if or .ModelsBytes .WorkBytes .StateFreeBytes}}
+    <dt>Disk</dt><dd class="disk">models {{bytesp .ModelsBytes}} · work {{bytesp .WorkBytes}} · {{bytesp .StateFreeBytes}} free</dd>
+    {{with .CachedModels}}<dt>Cached models</dt><dd>{{range $i, $m := .}}{{if $i}}, {{end}}{{$m.Name}} ({{bytes $m.Bytes}}){{end}}</dd>{{end}}
+    {{end}}{{end}}
     <dt>Last seen</dt><dd>{{ago $w.LastSeenAt}}{{with $w.LastSeenAt}} <span class="muted small">({{when .}})</span>{{end}}</dd>
     <dt>Registered</dt><dd>{{when $w.RegisteredAt}}</dd>
     {{with $w.DecidedBy}}<dt>Decided by</dt><dd>{{.}}{{with $w.DecidedAt}} <span class="muted small">({{when .}})</span>{{end}}</dd>{{end}}

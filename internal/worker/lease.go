@@ -105,7 +105,11 @@ func (w *Worker) execute(ctx context.Context, l *api.Lease, run *leaseRun, log z
 	if err != nil {
 		return taskStats{}, retryableErr("creating work directory", err)
 	}
-	defer os.RemoveAll(dir)
+	w.disk.invalidate()
+	defer func() {
+		_ = os.RemoveAll(dir)
+		w.disk.invalidate()
+	}()
 	if err := w.giveToChild(dir); err != nil {
 		return taskStats{}, retryableErr("preparing work directory", err)
 	}

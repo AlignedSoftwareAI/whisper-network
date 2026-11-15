@@ -194,3 +194,27 @@ func gaugesOf(raw json.RawMessage) *api.Gauges {
 	}
 	return &g
 }
+
+// sanitizeGauges bounds what a worker reports in its gauges before it is
+// stored and shown: negative readings are dropped, and an oversized cached
+// model list is dropped rather than failing the heartbeat or claim.
+func sanitizeGauges(g *api.Gauges) *api.Gauges {
+	if g == nil {
+		return nil
+	}
+	for _, p := range []**int64{&g.ModelsBytes, &g.WorkBytes, &g.StateFreeBytes} {
+		if *p != nil && **p < 0 {
+			*p = nil
+		}
+	}
+	if len(g.CachedModels) > api.MaxCachedModels {
+		g.CachedModels = nil
+	}
+	for _, m := range g.CachedModels {
+		if len(m.Name) > 100 || !utf8.ValidString(m.Name) || m.Bytes < 0 {
+			g.CachedModels = nil
+			break
+		}
+	}
+	return g
+}

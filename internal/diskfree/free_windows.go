@@ -1,12 +1,12 @@
 //go:build windows
 
-package server
+package diskfree
 
 import "golang.org/x/sys/windows"
 
-// FreeBytes returns the space available to the caller on the volume holding
+// Free returns the space available to the caller on the volume holding
 // path.
-func FreeBytes(path string) (int64, error) {
+func Free(path string) (int64, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err

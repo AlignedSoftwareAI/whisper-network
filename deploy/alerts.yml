@@ -56,6 +56,21 @@ groups:
         annotations:
           summary: "Less than 10% of the server's data space is free"
 
+      # Free space on a worker's --state filesystem (reported on heartbeats
+      # and claims). Below this the worker, with its default --disk-reserve
+      # of 1 GiB, starts handing back large tasks, and a fuller disk fails
+      # them. Workers that do not report disk readings have no series.
+      - alert: WhisperWorkerDiskLow
+        expr: |
+          (whisper_worker_state_free_bytes < 2 * 1024 * 1024 * 1024)
+            * on (worker) group_left (hostname) whisper_worker_info
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.hostname }} ({{ $labels.worker }}) has under 2 GiB free in its state directory"
+          description: "Free: {{ $value | humanize1024 }}B. Compare whisper_worker_models_bytes (consider --model-cache-max) and whisper_worker_work_bytes."
+
       - alert: WhisperNoEligibleWorker
         expr: |
           (whisper_queue_eligible_workers == 0)

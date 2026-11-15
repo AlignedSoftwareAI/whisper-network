@@ -287,6 +287,9 @@ type Worker struct {
 type ClaimRequest struct {
 	Kinds  []TaskKind `json:"kinds"`
 	Models []string   `json:"models"`
+	// Gauges are the worker's current readings. Heartbeats only flow while
+	// a lease is held, so an idle worker reports through its claims.
+	Gauges *Gauges `json:"gauges,omitempty"`
 }
 
 // Lease is the claim response (201).
@@ -309,12 +312,36 @@ type Lease struct {
 	ExpiresAt          time.Time `json:"expires_at"`
 }
 
-// Gauges are worker readings carried on heartbeats (§10.2).
+// Gauges are worker readings carried on heartbeats and claims (§10.2).
+//
+// The disk readings are pointers so that "not reported" (an older worker, or
+// a probe that failed) is distinguishable from zero: a worker whose disk is
+// full must be able to say so.
 type Gauges struct {
 	SlotsBusy        int     `json:"slots_busy"`
 	ChildRSSBytes    int64   `json:"child_rss_bytes"`
 	Load1            float64 `json:"load1"`
 	CPUThrottledSecs float64 `json:"cpu_throttled_seconds"`
+
+	// ModelsBytes is the size of the model cache (<state>/models),
+	// including partial downloads.
+	ModelsBytes *int64 `json:"models_bytes,omitempty"`
+	// WorkBytes is the size of all lease work directories (<state>/work).
+	WorkBytes *int64 `json:"work_bytes,omitempty"`
+	// StateFreeBytes is the free space on the filesystem holding <state>.
+	StateFreeBytes *int64 `json:"state_free_bytes,omitempty"`
+	// CachedModels lists the complete model files in the cache.
+	CachedModels []CachedModel `json:"cached_models,omitempty"`
+}
+
+// MaxCachedModels bounds Gauges.CachedModels; longer lists are dropped by
+// the server.
+const MaxCachedModels = 64
+
+// CachedModel is one model file in a worker's cache.
+type CachedModel struct {
+	Name  string `json:"name"`
+	Bytes int64  `json:"bytes"`
 }
 
 // HeartbeatRequest is the optional body of POST /lease/{id}/heartbeat.

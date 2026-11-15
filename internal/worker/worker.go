@@ -45,6 +45,8 @@ type Worker struct {
 
 	mem      *memBudget
 	cache    *ModelCache
+	disk     *diskMeter
+	gate     *diskGate
 	children children
 	busy     atomic.Int32
 
@@ -110,6 +112,8 @@ func (w *Worker) Run(ctx context.Context) error {
 	if err := os.MkdirAll(w.workRoot(), 0o700); err != nil {
 		return err
 	}
+	w.disk = newDiskMeter(w.cfg.StateDir, w.modelDir(), w.workRoot(), w.cfg.Catalog, w.cfg.FreeBytes)
+	w.gate = newDiskGate(w.disk, w.cfg.DiskReserve)
 	if err := w.shareWithChildren(); err != nil {
 		return err
 	}
@@ -146,7 +150,8 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 
 	w.mem = newMemBudget(w.budget())
-	w.cache = NewModelCache(workCtx, w.modelDir(), w.fetchModel)
+	w.cache = NewModelCache(workCtx, w.modelDir(), w.fetchModel).WithMax(w.cfg.ModelCacheMax)
+	w.cache.evict() // a lowered cap applies at once
 
 	w.log.Info().Int("slots", w.facts.Slots).Strs("models", w.facts.Models).
 		Strs("kinds", kindStrings(w.facts.Kinds)).Msg("worker active; starting slots")

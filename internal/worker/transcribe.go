@@ -81,19 +81,23 @@ func (w *Worker) transcribe(ctx context.Context, l *api.Lease, dir string, run *
 	if err != nil {
 		return taskStats{}, err
 	}
-	modelPath, err := w.cache.Path(ctx, m)
+	modelPath, releaseModel, err := w.cache.Acquire(ctx, m)
 	if err != nil {
 		return taskStats{}, transferError("fetching model "+m.Name, err)
 	}
+	defer releaseModel() // held against cache eviction while whisper-cli runs
+	w.disk.invalidate()
 	var vadPath string
 	if l.VADModel != "" {
 		vm, err := w.leaseModel(l.VADModel, l.VADModelSHA256, models.KindVAD)
 		if err != nil {
 			return taskStats{}, err
 		}
-		if vadPath, err = w.cache.Path(ctx, vm); err != nil {
+		var releaseVAD func()
+		if vadPath, releaseVAD, err = w.cache.Acquire(ctx, vm); err != nil {
 			return taskStats{}, transferError("fetching VAD model "+vm.Name, err)
 		}
+		defer releaseVAD()
 	}
 
 	in := filepath.Join(dir, "input.wav")
