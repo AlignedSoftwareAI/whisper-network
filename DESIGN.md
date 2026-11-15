@@ -199,7 +199,7 @@ CREATE TABLE workers (
   sandbox_level TEXT,                     -- 'full' | 'fs-only' | 'none' (§7.4)
   slots INTEGER, models TEXT,             -- JSON
   registered_at INTEGER NOT NULL, decided_by TEXT, decided_at INTEGER,
-  last_seen_at INTEGER, gauges TEXT);     -- JSON, latest heartbeat-reported gauges
+  last_seen_at INTEGER, gauges TEXT);     -- JSON, latest gauges from a heartbeat or claim
 
 CREATE TABLE grants (
   principal TEXT NOT NULL,                -- 'user:<id>' | 'client:<id>' | 'worker:<id>'
@@ -428,7 +428,7 @@ Model choice stays with the client. The rule "`en` → `small.en`, anything else
 | `POST /worker` | Register. Body: facts (below). Returns `201` `{id, token, state:"pending"}`. Rate-limited per source IP; at most `--max-pending-per-source` workers from one address (IPv6: one /64) may await approval at once (`429`), and `--max-pending-workers` in total (`503`). | none |
 | `GET /worker/{id}` | Own state and grants; config hints (heartbeat interval, poll interval). | that worker, or an admin |
 | `PATCH /worker/{id}` | Update facts (engine versions, models, slots, sandbox level) after restart or upgrade. | that worker |
-| `POST /worker/{id}/leases?wait=30s` | Claim one task. Body: `{"kinds":["prepare","transcribe"],"models":["small.en"]}`, describing what this slot can run **right now** given free memory. Returns `201` with the lease, or `204` on timeout. | active worker |
+| `POST /worker/{id}/leases?wait=30s` | Claim one task. Body: `{"kinds":["prepare","transcribe"],"models":["small.en"],"gauges":{…}}`, describing what this slot can run **right now** given free memory and disk. The optional `gauges` are the same readings a heartbeat carries (§10.2): heartbeats only flow while a lease is held, so an idle worker reports through its claims. Returns `201` with the lease, or `204` on timeout. | active worker |
 | `GET /lease/{id}/input` | Prepare: the original bytes. Transcribe: a WAV stream (16 kHz mono s16) decoded from the canonical FLAC for this task's sample range. `Range` is supported for prepare; transcribe input is regenerated on retry. | lease holder, live lease |
 | `POST /lease/{id}/heartbeat` | Extend the lease. Optional body: worker gauges (§10.2). Returns `200 {expires_at}`, or `410` if expired, cancelled or the job was deleted, or if the lease may not be extended any more: the worker is neither active nor paused, no longer holds `process` on the lease's queue, or the lease is past its maximum age (§8.3). The worker must then kill the child. | lease holder |
 | `PUT /lease/{id}/result` | Prepare: body is the canonical FLAC (`audio/flac`). Transcribe: segments JSON. Idempotent for the same lease. `410` if the lease is no longer live; `422` if validation fails (counts as a failed attempt). | lease holder |
@@ -473,7 +473,7 @@ The server validates the result: segment times must be monotonic, within the tas
 `/` redirects to `/ui`. Pages:
 
 - **Dashboard**: queue depths, running tasks, workers online, throughput (audio-hours per hour), and each queue's **actual vs configured share** (§8.2).
-- **Workers**: a table, pending first and filterable by state: name, state, queues, sandbox level, busy/total slots, last seen, the work counters' summary (§4.3: tasks done, audio hours, average realtime factor, failure rate; the breakdown on hover), and pause/resume in the row. Each worker has its own page with the facts list (including sandbox level), approve (queue picker), pause, resume and reject, per-queue `process` grants, its full work counters, and current leases (job, task and lease age). A worker the viewer may not see is a 404.
+- **Workers**: a table, pending first and filterable by state: name, state, queues, sandbox level, busy/total slots, last seen, the work counters' summary (§4.3: tasks done, audio hours, average realtime factor, failure rate; the breakdown on hover), and pause/resume in the row. Each worker has its own page with the facts list (including sandbox level, disk use — model cache, work directories, free space under `--state` — and cached models), approve (queue picker), pause, resume and reject, per-queue `process` grants, its full work counters, and current leases (job, task and lease age). A worker the viewer may not see is a 404.
 - **Queues**: create, edit (weight is admin-only) and list jobs; per-queue grants. The job list's Workers column names the workers holding a running job's live leases, or for a done or failed job the workers that completed its tasks, each linking to the worker's page (subject to §5.3).
 - **Jobs**: filters, detail view (finished tasks, and each running task's worker, lease age, last heartbeat and attempt), delete, transcript download.
 - **Users and clients**: create, disable, grant roles, mint tokens (shown once).
@@ -512,6 +512,12 @@ loop:
 - Heartbeats run independently of the child process, so a long whisper run never starves them.
 - **Prepare command:** `ffmpeg -nostdin -hide_banner -loglevel error -i in -map 0:a:0 -vn -sn -dn -ac 1 -ar 16000 -sample_fmt s16 -c:a flac -compression_level 5 out.flac`. The first audio stream is picked; selecting among multiple streams is a later concern.
 - **Transcribe command:** `whisper-cli -m model -f in.wav -l lang -t threads --prompt … -oj -of out`. The JSON output is converted to the result schema.
+
+**Disk.** Everything a worker writes lives under `--state`: the model cache (`models/`, 0.5–3 GB per model, kept across tasks) and one work directory per running lease (`work/<lease>-…/`, removed when the lease ends; the whole of `work/` is wiped at startup, so a crashed child's leftovers do not outlive the process).
+
+- **Admission.** Before running a lease the worker estimates its footprint: prepare, `input_bytes` for the original plus as much again for the FLAC (an estimate; `RLIMIT_FSIZE` still caps the output); transcribe, the WAV (`44 + 2 × audio_samples`), plus the model and VAD model if not yet cached; each plus 16 MiB of slack. The lease is admitted only if that fits in `free − --disk-reserve (1 GiB) − (footprints of running leases − bytes they have written so far)`, so concurrent slots cannot be promised the same space. Otherwise the worker releases the lease at once (`DELETE /lease/{id}`: no attempt consumed, the task requeues for a worker with room) and withholds that kind from its claims until the space it needed is free, or for at most 10 minutes so a smaller task of the kind gets a chance. If every kind is withheld the slot waits a poll interval between checks. Without a free-space reading (the probe failed) nothing is refused.
+- **Model cache cap.** `--model-cache-max` (default 0: unlimited) bounds `models/`. Whenever a download completes or a task releases a model, least-recently-used model files that no task holds are deleted until the directory fits. Last use is the file's modification time, touched on every use, so the order survives restarts. Partial downloads and models in use are never evicted; a cap smaller than the models in use at once is exceeded rather than failing a task.
+- **Reporting.** The worker reports `models_bytes`, `work_bytes`, `state_free_bytes` and the cached model list in its gauges (§10.2), measured by listing `models/`, walking `work/` (a few files per running lease) and `statfs` on `--state`, reused for 5 s and re-measured when the worker itself creates or removes a work directory or fetches a model.
 
 ### 7.3 Concurrency: is "one job per CPU" right?
 
@@ -801,7 +807,7 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 
 **Workers: zero-config by default**
 - Fleet metrics are derived on the server from the protocol, so workers need no metrics config to be visible. The server already knows every lease, result, compute time and realtime factor.
-- Heartbeat bodies carry a few worker gauges, which the server re-exports with a `worker` label: slots busy, child RSS, load average, and cgroup CPU throttling.
+- Heartbeat bodies carry a few worker gauges, which the server re-exports with a `worker` label: slots busy, child RSS, load average, cgroup CPU throttling, and disk use under `--state` (model cache, work directories, free space; §7.2). Claims carry the same gauges, so idle workers, which send no heartbeats, stay current. Disk series are written only for workers that reported them.
 - **Optional, for host detail:** `--metrics-push-url` (same semantics as the server) or `--metrics-listen` for scraping.
 
 **Cardinality rules**
@@ -833,6 +839,8 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | `whisper_worker_slots` / `whisper_worker_slots_busy` | gauge | `worker` | Utilization |
 | `whisper_worker_audio_seconds_total` | counter | `worker`, `model` | Throughput per machine (resets with the process; the durable per-worker totals are the `worker_stats` counters, §4.3) |
 | `whisper_worker_child_rss_bytes` | gauge | `worker` | Memory sizing (§7.3) |
+| `whisper_worker_models_bytes` / `whisper_worker_work_bytes` | gauge | `worker` | Disk use under `--state`: model cache, lease work directories |
+| `whisper_worker_state_free_bytes` | gauge | `worker` | Worker disk alert |
 | `whisper_http_requests_total` | counter | `route`, `method`, `code` | |
 | `whisper_http_request_duration_seconds` | histogram | `route` | |
 | `whisper_upload_bytes_total` / `whisper_input_served_bytes_total` | counter | `queue` / `kind` | Bandwidth |
@@ -849,6 +857,7 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | Lease churn | `rate(whisper_leases_ended_total{outcome="expired"}[15m]) > 0.1` |
 | Worker vanished | active worker with `time() - whisper_worker_last_seen_timestamp_seconds > 600` |
 | Disk | `whisper_data_free_bytes / (whisper_data_free_bytes + sum(whisper_storage_bytes)) < 0.1` |
+| Worker disk | `whisper_worker_state_free_bytes < 2 GiB` for 15 min (the worker starts handing back large tasks near its 1 GiB `--disk-reserve`) |
 | No eligible worker | `whisper_tasks{state="pending"} > 0` and no worker granted that queue has been seen in 10 min (computed server-side as `whisper_queue_eligible_workers == 0`) |
 
 ### 10.3 Health
@@ -915,6 +924,8 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--threads-per-slot` | 4 | |
 | `--slots` | derived (§7.3) | Override |
 | `--memory-reserve` | 1 GiB | |
+| `--disk-reserve` | 1 GiB | Kept free on the `--state` filesystem (disk admission, §7.2) |
+| `--model-cache-max` | 0 (unlimited) | LRU cap on the model cache (§7.2) |
 | `--kinds` | `prepare,transcribe` | e.g. `transcribe` only, to keep ffmpeg off a machine |
 | `--whisper-cli` / `--ffmpeg` | on `$PATH` | |
 | `--drain` | false | Graceful shutdown finishes running tasks first |

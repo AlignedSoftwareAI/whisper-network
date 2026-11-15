@@ -78,7 +78,8 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request, p *Principa
 	if prob := claimState(wk.State); prob != nil {
 		return prob
 	}
-	if err := s.st.TouchWorker(ctx, wk.ID, nil); err != nil {
+	// Idle workers send no heartbeats; their claims carry the gauges.
+	if err := s.st.TouchWorker(ctx, wk.ID, sanitizeGauges(req.Gauges)); err != nil {
 		return err
 	}
 
@@ -182,7 +183,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, p *Prin
 	if err := decodeWorkerJSON(w, r, &req, true, maxJSONBody); err != nil {
 		return err
 	}
-	if err := s.st.TouchWorker(ctx, p.ID, req.Gauges); err != nil {
+	if err := s.st.TouchWorker(ctx, p.ID, sanitizeGauges(req.Gauges)); err != nil {
 		return err
 	}
 	exp, err := s.st.Heartbeat(ctx, r.PathValue("id"), p.ID, s.leaseTTL(),

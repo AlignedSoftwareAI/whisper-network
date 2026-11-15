@@ -11,11 +11,13 @@ func TestWorkerCmdFlags(t *testing.T) {
 	skipOnWindows(t, "the worker is unsupported")
 	var opts Options
 	_, err := opts.Parse([]string{"worker", "--server", "https://wn.example", "--memory-reserve", "512MiB",
-		"--memory", "6g", "--kinds", "transcribe", "--slots", "2", "--drain"})
+		"--memory", "6g", "--kinds", "transcribe", "--slots", "2", "--drain", "--model-cache-max", "10GiB"})
 	require.NoError(t, err)
 	c := opts.Worker
 	assert.Equal(t, ByteSize(512<<20), c.MemoryReserve)
 	assert.Equal(t, ByteSize(6<<30), c.Memory)
+	assert.Equal(t, ByteSize(1<<30), c.DiskReserve, "default")
+	assert.Equal(t, ByteSize(10<<30), c.ModelCacheMax)
 	assert.Equal(t, []string{"transcribe"}, c.Kinds)
 	assert.Equal(t, 4, c.ThreadsPerSlot)
 	assert.Equal(t, "/var/lib/whisper-network", c.State)

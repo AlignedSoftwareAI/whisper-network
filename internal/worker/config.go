@@ -13,6 +13,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/backoff"
 	"github.com/deweysasser/whisper-network/internal/client"
+	"github.com/deweysasser/whisper-network/internal/diskfree"
 	"github.com/deweysasser/whisper-network/internal/models"
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/sandbox"
@@ -39,6 +40,16 @@ type Config struct {
 	// Memory overrides the probed memory limit when > 0. Required where the
 	// platform offers no probe.
 	Memory int64
+	// DiskReserve is kept free on the state filesystem: a lease whose input
+	// and expected output would eat into it is released unrun (default
+	// 1 GiB).
+	DiskReserve int64
+	// ModelCacheMax caps the model cache; least recently used models not
+	// in use are evicted to stay under it. 0 means unlimited.
+	ModelCacheMax int64
+	// FreeBytes reports free space on the filesystem holding a path
+	// (default diskfree.Free).
+	FreeBytes func(path string) (int64, error)
 	// Kinds the operator allows (default prepare and transcribe). The
 	// worker offers only those whose tool is installed.
 	Kinds []api.TaskKind
@@ -162,6 +173,13 @@ func (c *Config) setDefaults() error {
 	}
 	def(&c.ThreadsPerSlot, 4)
 	def64(&c.MemoryReserve, gib)
+	def64(&c.DiskReserve, gib)
+	if c.ModelCacheMax < 0 {
+		c.ModelCacheMax = 0
+	}
+	if c.FreeBytes == nil {
+		c.FreeBytes = diskfree.Free
+	}
 	if len(c.Kinds) == 0 {
 		c.Kinds = []api.TaskKind{api.KindPrepare, api.KindTranscribe}
 	}

@@ -63,16 +63,21 @@ func (w *Worker) heartbeat(ctx context.Context, l *api.Lease, run *leaseRun, can
 	}
 }
 
-// gauges are the worker readings carried on heartbeats (DESIGN.md §10.2).
+// gauges are the worker readings carried on heartbeats and claims (DESIGN.md
+// §10.2).
 func (w *Worker) gauges() api.Gauges {
 	var rss int64
 	for _, pid := range w.children.list() {
 		rss += w.sys.RSS(pid)
 	}
-	return api.Gauges{
+	g := api.Gauges{
 		SlotsBusy:        int(w.busy.Load()),
 		ChildRSSBytes:    rss,
 		Load1:            w.sys.Load1(),
 		CPUThrottledSecs: w.sys.CPUThrottled().Seconds(),
 	}
+	if w.disk != nil {
+		w.disk.read().gauges(&g)
+	}
+	return g
 }

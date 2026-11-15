@@ -27,6 +27,8 @@ type WorkerCmd struct {
 	Slots          int           `env:"WHISPER_SLOTS" help:"Override the derived slot count"`
 	MemoryReserve  ByteSize      `default:"1GiB" env:"WHISPER_MEMORY_RESERVE" help:"Memory kept free for the system"`
 	Memory         ByteSize      `env:"WHISPER_MEMORY" help:"Override the probed memory limit (required where it cannot be probed)"`
+	DiskReserve    ByteSize      `default:"1GiB" env:"WHISPER_DISK_RESERVE" help:"Disk kept free on the state filesystem; a task whose input and output would not fit above it is handed back"`
+	ModelCacheMax  ByteSize      `default:"0" env:"WHISPER_MODEL_CACHE_MAX" help:"Cap on the model cache; least recently used models not in use are evicted (0: unlimited)"`
 	Kinds          []string      `default:"prepare,transcribe" enum:"prepare,transcribe" sep:"," env:"WHISPER_KINDS" help:"Task kinds to accept"`
 	WhisperCLI     string        `name:"whisper-cli" default:"whisper-cli" env:"WHISPER_WHISPER_CLI" help:"whisper-cli binary"`
 	FFmpeg         string        `name:"ffmpeg" default:"ffmpeg" env:"WHISPER_FFMPEG" help:"ffmpeg binary"`
@@ -66,6 +68,7 @@ func (c *WorkerCmd) Run(ctx context.Context, logger zerolog.Logger) error {
 		Client: cl, StateDir: c.State, Description: c.Description,
 		ThreadsPerSlot: c.ThreadsPerSlot, Slots: c.Slots,
 		MemoryReserve: int64(c.MemoryReserve), Memory: int64(c.Memory), Kinds: kinds,
+		DiskReserve: int64(c.DiskReserve), ModelCacheMax: int64(c.ModelCacheMax),
 		WhisperCLI: c.WhisperCLI, FFmpeg: c.FFmpeg, EngineVersion: c.EngineVersion, Drain: c.Drain,
 		ChildUID: c.ChildUID, ChildGID: c.ChildGID,
 		Version: Version, Logger: log, Metrics: m,

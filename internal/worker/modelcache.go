@@ -9,7 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/deweysasser/whisper-network/internal/models"
 )
@@ -35,9 +38,17 @@ type ModelCache struct {
 	// caller that started it gives up, so the next lease benefits.
 	base context.Context
 
+	// max caps the directory's size (0: unlimited); see evict.
+	max int64
+
 	mu       sync.Mutex
 	verified map[string]bool
 	flights  map[string]*flight
+	// inUse counts holders of each model file (by file name), from the
+	// moment Acquire is called until its release.
+	inUse map[string]int
+	// files maps verified model names to their file names.
+	files map[string]string
 }
 
 type flight struct {
@@ -49,19 +60,55 @@ type flight struct {
 // NewModelCache returns a cache in dir. Downloads run under base and stop
 // when it is cancelled.
 func NewModelCache(base context.Context, dir string, fetch Fetcher) *ModelCache {
-	return &ModelCache{dir: dir, fetch: fetch, base: base, verified: map[string]bool{}, flights: map[string]*flight{}}
+	return &ModelCache{dir: dir, fetch: fetch, base: base, verified: map[string]bool{},
+		flights: map[string]*flight{}, inUse: map[string]int{}, files: map[string]string{}}
+}
+
+// WithMax caps the cache at max bytes (0: unlimited) and returns c. Least
+// recently used model files not in use are deleted to stay under the cap
+// whenever a download completes or a model is released. A cap smaller than
+// the models in use at once is exceeded rather than failing tasks.
+func (c *ModelCache) WithMax(max int64) *ModelCache {
+	c.max = max
+	return c
 }
 
 // Path returns the local path of a verified copy of m, downloading it if
-// needed. ctx bounds only this caller's wait.
+// needed. ctx bounds only this caller's wait. With a cap the file may be
+// evicted once Path returns; callers that read it later use Acquire.
 func (c *ModelCache) Path(ctx context.Context, m models.Model) (string, error) {
+	p, release, err := c.Acquire(ctx, m)
+	if err != nil {
+		return "", err
+	}
+	release()
+	return p, nil
+}
+
+// Acquire is Path, holding the model file against eviction until release is
+// called. It marks the model as used now, for LRU ordering.
+func (c *ModelCache) Acquire(ctx context.Context, m models.Model) (path string, release func(), err error) {
 	if m.File == "" || m.SHA256 == "" || filepath.Base(m.File) != m.File {
-		return "", fmt.Errorf("model %q: bad catalog entry", m.Name)
+		return "", nil, fmt.Errorf("model %q: bad catalog entry", m.Name)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			c.mu.Lock()
+			if c.inUse[m.File]--; c.inUse[m.File] <= 0 {
+				delete(c.inUse, m.File)
+			}
+			c.mu.Unlock()
+			c.evict()
+		})
 	}
 	c.mu.Lock()
+	c.inUse[m.File]++
 	if c.verified[m.Name] {
 		c.mu.Unlock()
-		return c.final(m), nil
+		path = c.final(m)
+		touch(path)
+		return path, release, nil
 	}
 	f, ok := c.flights[m.Name]
 	if !ok {
@@ -73,9 +120,78 @@ func (c *ModelCache) Path(ctx context.Context, m models.Model) (string, error) {
 
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		release()
+		return "", nil, ctx.Err()
 	case <-f.done:
-		return f.path, f.err
+		if f.err != nil {
+			release()
+			return "", nil, f.err
+		}
+		touch(f.path)
+		return f.path, release, nil
+	}
+}
+
+// Cached reports whether m's file is present at its pinned size (not
+// necessarily verified yet).
+func (c *ModelCache) Cached(m models.Model) bool {
+	fi, err := os.Stat(c.final(m))
+	return err == nil && fi.Mode().IsRegular() && fi.Size() == m.Size
+}
+
+// touch records a use in the file's modification time, which orders
+// eviction and survives restarts.
+func touch(path string) {
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
+}
+
+// evict deletes least recently used model files that are neither in use nor
+// downloading until the directory fits under the cap. Partial downloads and
+// files in use count toward the total but are never evicted.
+func (c *ModelCache) evict() {
+	if c.max <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ents, err := os.ReadDir(c.dir)
+	if err != nil {
+		return
+	}
+	type cand struct {
+		file string
+		size int64
+		used time.Time
+	}
+	var total int64
+	var cands []cand
+	for _, e := range ents {
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		total += fi.Size()
+		if strings.HasPrefix(e.Name(), ".") || c.inUse[e.Name()] > 0 {
+			continue
+		}
+		cands = append(cands, cand{e.Name(), fi.Size(), fi.ModTime()})
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].used.Before(cands[j].used) })
+	for _, k := range cands {
+		if total <= c.max {
+			return
+		}
+		if os.Remove(filepath.Join(c.dir, k.file)) != nil {
+			continue
+		}
+		total -= k.size
+		for name, file := range c.files {
+			if file == k.file {
+				delete(c.verified, name)
+				delete(c.files, name)
+			}
+		}
 	}
 }
 
@@ -86,10 +202,15 @@ func (c *ModelCache) run(m models.Model, f *flight) {
 	c.mu.Lock()
 	if f.err == nil {
 		c.verified[m.Name] = true
+		c.files[m.Name] = m.File
 	}
 	delete(c.flights, m.Name)
 	c.mu.Unlock()
 	close(f.done)
+	if f.err == nil {
+		// Waiters still hold the new file; this trims older ones.
+		c.evict()
+	}
 }
 
 func (c *ModelCache) ensure(m models.Model) (string, error) {

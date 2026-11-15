@@ -47,6 +47,13 @@ func (u *UI) funcs() template.FuncMap {
 		"secs":  func(s float64) string { return formatDuration(time.Duration(s * float64(time.Second))) },
 		"secsp": formatSecsPtr,
 		"bytes": formatBytes,
+		// bytesp formats an optional reading; "?" when it was not reported.
+		"bytesp": func(n *int64) string {
+			if n == nil {
+				return "?"
+			}
+			return formatBytes(*n)
+		},
 		"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
 		"num":   func(f float64) string { return fmt.Sprintf("%.1f", f) },
 		"hours": formatHours,

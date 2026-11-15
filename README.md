@@ -366,6 +366,8 @@ for the authoritative list.
 | `--slots` | derived | `WHISPER_SLOTS` | Override the derived slot count (min of cores / threads and memory / model peak RSS) |
 | `--memory-reserve` | `1GiB` | `WHISPER_MEMORY_RESERVE` | Memory kept free for the system |
 | `--memory` | probed | `WHISPER_MEMORY` | Override the probed memory limit; required where it cannot be probed |
+| `--disk-reserve` | `1GiB` | `WHISPER_DISK_RESERVE` | Disk kept free on the `--state` filesystem; a task whose input and expected output would not fit above it is handed back unrun |
+| `--model-cache-max` | `0` (unlimited) | `WHISPER_MODEL_CACHE_MAX` | Cap on the model cache; least recently used models not in use are evicted |
 | `--kinds` | `prepare,transcribe` | `WHISPER_KINDS` | Task kinds to accept |
 | `--whisper-cli` | `whisper-cli` | `WHISPER_WHISPER_CLI` | whisper-cli binary |
 | `--ffmpeg` | `ffmpeg` | `WHISPER_FFMPEG` | ffmpeg binary |
@@ -469,8 +471,9 @@ the raw path.
 ### Alerts
 
 [deploy/alerts.yml](deploy/alerts.yml) holds vmalert/Prometheus rules: server
-not scraped, queue stalled, lease churn, worker vanished, low disk, and pending
-tasks with no eligible worker. Load it into vmalert or Prometheus as-is.
+not scraped, queue stalled, lease churn, worker vanished, low disk (server data
+directory and worker state directories), and pending tasks with no eligible
+worker. Load it into vmalert or Prometheus as-is.
 
 ### Health
 

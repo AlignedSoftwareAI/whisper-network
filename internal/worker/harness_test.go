@@ -135,6 +135,7 @@ func newHarness(t *testing.T) *harness {
 		SysRoot:        fakeRoot(),
 		NumCPU:         8,
 		Limits:         Limits{NoAddressSpaceLimit: true},
+		FreeBytes:      func(string) (int64, error) { return 1 << 40, nil },
 		ProbeSandbox: func(context.Context) (sandbox.ProbeResult, error) {
 			return sandbox.ProbeResult{Level: api.SandboxFull, LandlockABI: 6}, nil
 		},

@@ -4,8 +4,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/client"
+	"github.com/deweysasser/whisper-network/internal/obs"
 )
 
 // claimSlack is how much longer than the server's long-poll wait the client
@@ -22,6 +25,15 @@ func (w *Worker) slot(runCtx, workCtx context.Context, n int) {
 		off, res, err := w.mem.reserve(runCtx, w.facts.Kinds, w.offered, w.cfg.Limits.PrepareMemory)
 		if err != nil {
 			return
+		}
+		if off = w.gate.filter(off); off.empty() {
+			// Every kind is withheld for lack of disk: wait for space.
+			res.release()
+			log.Debug().Dur("retry_in", w.pollInterval).Msg("no disk space for any offered work; waiting")
+			if w.cfg.Sleep(runCtx, w.pollInterval) != nil {
+				return
+			}
+			continue
 		}
 		lease, err := w.claim(runCtx, off)
 		if err != nil || lease == nil {
@@ -51,18 +63,47 @@ func (w *Worker) slot(runCtx, workCtx context.Context, n int) {
 			continue
 		}
 		failures = 0
+		need := w.leaseDisk(lease)
+		releaseDisk, avail, ok := w.gate.admit(lease.Kind, need)
+		if !ok {
+			res.release()
+			w.refuse(log, lease, need, avail)
+			continue
+		}
 		res.shrink(w.leaseMemory(lease))
 		w.busy.Add(1)
 		w.handleLease(runCtx, workCtx, lease)
 		w.busy.Add(-1)
+		releaseDisk()
 		res.release()
 	}
 }
 
+// claim long-polls for a lease. The request carries the worker's gauges:
+// heartbeats only flow while a lease is held, so this is how an idle worker
+// keeps its disk and load readings current on the server.
 func (w *Worker) claim(ctx context.Context, off offer) (*api.Lease, error) {
 	ctx, cancel := context.WithTimeout(ctx, w.cfg.ClaimWait+claimSlack)
 	defer cancel()
-	return w.api.Claim(ctx, w.creds.ID, api.ClaimRequest{Kinds: off.kinds, Models: off.models}, w.cfg.ClaimWait)
+	g := w.gauges()
+	return w.api.Claim(ctx, w.creds.ID, api.ClaimRequest{Kinds: off.kinds, Models: off.models, Gauges: &g}, w.cfg.ClaimWait)
+}
+
+// refuse hands back a lease whose task would not fit on disk. A voluntary
+// release consumes no attempt, so the task goes to a worker with room; this
+// worker withholds the kind from its claims until space frees (diskGate).
+func (w *Worker) refuse(log zerolog.Logger, l *api.Lease, need, avail int64) {
+	log = log.With().Str(obs.FieldLeaseID, l.ID).Str(obs.FieldJobID, l.Job).Int(obs.FieldTaskSeq, l.Seq).
+		Str(obs.FieldTaskKind, string(l.Kind)).Logger()
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	if err := w.api.Release(ctx, l.ID); err != nil {
+		log.Warn().Err(err).Msg("could not release a lease that does not fit on disk; it will expire")
+		return
+	}
+	obs.Warn(&log, obs.EventLeaseReleased).Str(obs.FieldOutcome, string(api.OutcomeReleased)).
+		Str(obs.FieldReason, "insufficient disk").Int64("need_bytes", need).Int64("available_bytes", avail).
+		Int64("disk_reserve_bytes", w.cfg.DiskReserve).Msg("lease released: the task does not fit on disk")
 }
 
 // leaseMemory is the memory a lease's work needs.

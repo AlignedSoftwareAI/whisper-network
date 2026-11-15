@@ -118,6 +118,7 @@ func fixtureSnapshot() Snapshot {
 			FFmpegVersion: "7.1", SandboxLevel: "full", Arch: "amd64",
 			LastSeen: time.Unix(1700000000, 0), Slots: 4, SlotsBusy: 3, ChildRSSBytes: 1 << 30,
 			Load1: 1.5, CPUThrottled: 2 * time.Second,
+			ModelsBytes: ptr(int64(3 << 30)), WorkBytes: ptr(int64(0)), StateFreeBytes: ptr(int64(50 << 30)),
 		}},
 		Storage:       StorageBytes{Original: 10, Canonical: 20, Transcript: 30},
 		DataFreeBytes: 999,
@@ -145,6 +146,9 @@ func TestSnapshotGauges(t *testing.T) {
 		`whisper_worker_slots{worker="w1"} 4`,
 		`whisper_worker_slots_busy{worker="w1"} 3`,
 		`whisper_worker_child_rss_bytes{worker="w1"} 1.073741824e+09`,
+		`whisper_worker_models_bytes{worker="w1"} 3221225472`,
+		`whisper_worker_work_bytes{worker="w1"} 0`,
+		`whisper_worker_state_free_bytes{worker="w1"} 53687091200`,
 		`whisper_storage_bytes{kind="original"} 10`,
 		`whisper_storage_bytes{kind="transcript"} 30`,
 		`whisper_data_free_bytes 999`,
@@ -152,6 +156,21 @@ func TestSnapshotGauges(t *testing.T) {
 		assert.Contains(t, out, want)
 	}
 }
+
+// A worker that reported no disk readings (an older worker) has no disk
+// series, rather than a zero that would trip the low-disk alert.
+func TestWorkerDiskSeriesOnlyWhenReported(t *testing.T) {
+	m := newTestMetrics()
+	m.SetSnapshot(Snapshot{WorkerInfo: []WorkerStat{{ID: "old"}, {ID: "full", StateFreeBytes: ptr(int64(0))}}})
+	out := scrape(t, m)
+	assert.Contains(t, out, `whisper_worker_slots{worker="old"} 0`)
+	assert.NotContains(t, out, `whisper_worker_models_bytes{worker="old"}`)
+	assert.NotContains(t, out, `whisper_worker_state_free_bytes{worker="old"}`)
+	assert.Contains(t, out, `whisper_worker_state_free_bytes{worker="full"} 0`)
+	assert.NotContains(t, out, `whisper_worker_work_bytes{worker="full"}`)
+}
+
+func ptr[T any](v T) *T { return &v }
 
 func TestSnapshotReplacementDropsRetiredSeries(t *testing.T) {
 	m := newTestMetrics()

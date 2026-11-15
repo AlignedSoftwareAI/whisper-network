@@ -78,8 +78,8 @@ VictoriaMetrics scrapes the server every 15 s. Query it at
 `whisper_queue_oldest_pending_seconds` or `whisper_workers`.
 
 `alerts.yml` defines: `WhisperServerDown`, `WhisperQueueStalled`,
-`WhisperLeaseChurn`, `WhisperWorkerVanished`, `WhisperDiskLow` and
-`WhisperNoEligibleWorker`. Check the file without running a stack:
+`WhisperLeaseChurn`, `WhisperWorkerVanished`, `WhisperDiskLow`,
+`WhisperWorkerDiskLow` and `WhisperNoEligibleWorker`. Check the file without running a stack:
 
 ```sh
 docker run --rm -v "$PWD/deploy/alerts.yml:/alerts.yml:ro" \

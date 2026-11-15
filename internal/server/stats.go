@@ -59,6 +59,7 @@ func (s *Server) refreshStats(ctx context.Context) {
 		if g := gaugesOf(wk.Gauges); g != nil {
 			ws.SlotsBusy, ws.ChildRSSBytes, ws.Load1 = g.SlotsBusy, g.ChildRSSBytes, g.Load1
 			ws.CPUThrottled = secs(g.CPUThrottledSecs)
+			ws.ModelsBytes, ws.WorkBytes, ws.StateFreeBytes = g.ModelsBytes, g.WorkBytes, g.StateFreeBytes
 		}
 		snap.WorkerInfo = append(snap.WorkerInfo, ws)
 	}
