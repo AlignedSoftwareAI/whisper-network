@@ -63,20 +63,33 @@ func (t *Tx) RegisterWorkerCapped(ctx context.Context, tokenHash string, facts a
 	return t.registerWorker(ctx, tokenHash, facts, lim.Source)
 }
 
+// PrunedWorker is a worker deleted by DeleteRejectedWorkers, with the
+// counters deleted with it.
+type PrunedWorker struct {
+	ID    string
+	Stats api.WorkerStats
+}
+
 // DeleteRejectedWorkers deletes workers rejected before cutoff, with every
-// grant they hold or that is scoped to them, and returns how many. Until
-// then a rejected worker's token still earns it a "rejected" answer, telling
-// it to exit; afterwards the token is merely unknown.
+// grant they hold or that is scoped to them and their counters, and returns
+// how many. Until then a rejected worker's token still earns it a
+// "rejected" answer, telling it to exit; afterwards the token is merely
+// unknown.
 func (s *Store) DeleteRejectedWorkers(ctx context.Context, cutoff time.Time) (int64, error) {
-	ids, err := inTx1(ctx, s, func(tx *Tx) ([]string, error) { return tx.DeleteRejectedWorkers(ctx, cutoff) })
-	return int64(len(ids)), err
+	ws, err := inTx1(ctx, s, func(tx *Tx) ([]PrunedWorker, error) { return tx.DeleteRejectedWorkers(ctx, cutoff) })
+	return int64(len(ws)), err
 }
 
 // DeleteRejectedWorkers is Store.DeleteRejectedWorkers inside the
-// transaction. It returns the deleted workers' ids.
-func (t *Tx) DeleteRejectedWorkers(ctx context.Context, cutoff time.Time) ([]string, error) {
+// transaction. It returns the deleted workers with their final counters
+// (deleted with them by ON DELETE CASCADE), so the caller can record them.
+func (t *Tx) DeleteRejectedWorkers(ctx context.Context, cutoff time.Time) ([]PrunedWorker, error) {
 	const where = `state = 'rejected' AND COALESCE(decided_at, registered_at) < ?`
 	ms := toMS(cutoff)
+	stats, err := t.statsWhere(ctx, `w.`+where, ms)
+	if err != nil {
+		return nil, fmt.Errorf("delete rejected workers: %w", err)
+	}
 	if _, err := t.tx.ExecContext(ctx, `DELETE FROM grants
 		WHERE principal IN (SELECT 'worker:' || id FROM workers WHERE `+where+`)
 		   OR scope IN (SELECT 'worker:' || id FROM workers WHERE `+where+`)`, ms, ms); err != nil {
@@ -87,13 +100,13 @@ func (t *Tx) DeleteRejectedWorkers(ctx context.Context, cutoff time.Time) ([]str
 		return nil, fmt.Errorf("delete rejected workers: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var out []PrunedWorker
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("delete rejected workers: %w", err)
 		}
-		ids = append(ids, id)
+		out = append(out, PrunedWorker{ID: id, Stats: stats[id]})
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }

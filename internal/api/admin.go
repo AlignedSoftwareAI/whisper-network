@@ -15,6 +15,53 @@ type WorkerSummary struct {
 	DecidedBy    string     `json:"decided_by,omitempty"`
 	DecidedAt    *time.Time `json:"decided_at,omitempty"`
 	Gauges       *Gauges    `json:"gauges,omitempty"`
+	// Stats is what the worker has done. Servers before it was added omit it.
+	Stats *WorkerStats `json:"stats,omitempty"`
+}
+
+// WorkerStats are a worker's durable work counters. Completed tasks count
+// once each; a release or a cancellation counts as nothing. They cover the
+// worker's whole life, except that history from before the counters were
+// added is limited to what was then retained (DESIGN.md §4.3).
+type WorkerStats struct {
+	PrepareTasks    int64 `json:"prepare_tasks"`
+	TranscribeTasks int64 `json:"transcribe_tasks"`
+	// Jobs counts distinct jobs with at least one task completed by the worker.
+	Jobs int64 `json:"jobs"`
+	// AudioS is the audio of completed transcribe tasks, in seconds.
+	AudioS float64 `json:"audio_s"`
+	// ComputeS is the reported compute time of completed tasks, of which
+	// TranscribeComputeS was spent on transcribe tasks.
+	ComputeS           float64 `json:"compute_s"`
+	TranscribeComputeS float64 `json:"transcribe_compute_s"`
+	// Failures counts leases the worker reported failed; ExpiredLeases those
+	// that expired (crash, lost heartbeats, age limit).
+	Failures      int64      `json:"failures"`
+	ExpiredLeases int64      `json:"expired_leases"`
+	FirstTaskAt   *time.Time `json:"first_task_at,omitempty"`
+	LastTaskAt    *time.Time `json:"last_task_at,omitempty"`
+}
+
+// TasksDone is the number of tasks completed, of either kind.
+func (s *WorkerStats) TasksDone() int64 { return s.PrepareTasks + s.TranscribeTasks }
+
+// RealtimeFactor is audio seconds transcribed per compute second (higher is
+// faster), or 0 before the first transcribe task.
+func (s *WorkerStats) RealtimeFactor() float64 {
+	if s.TranscribeComputeS <= 0 {
+		return 0
+	}
+	return s.AudioS / s.TranscribeComputeS
+}
+
+// FailureRate is the fraction of counted lease outcomes (completed, failed,
+// expired) that were not completions, or 0 with none.
+func (s *WorkerStats) FailureRate() float64 {
+	bad := s.Failures + s.ExpiredLeases
+	if total := s.TasksDone() + bad; total > 0 {
+		return float64(bad) / float64(total)
+	}
+	return 0
 }
 
 // ApproveWorkerRequest is the body of POST /admin/workers/{id}/approve:

@@ -242,6 +242,15 @@ CREATE TABLE leases (
   FOREIGN KEY (job_id, seq) REFERENCES tasks ON DELETE CASCADE);
 CREATE INDEX leases_live ON leases (expires_at) WHERE ended_at IS NULL;
 
+CREATE TABLE worker_stats (                   -- per-worker work counters
+  worker_id TEXT PRIMARY KEY REFERENCES workers ON DELETE CASCADE,
+  prepare_done INTEGER, transcribe_done INTEGER,  -- completed tasks by kind
+  jobs INTEGER,                               -- distinct jobs with a task completed by the worker
+  audio_ms INTEGER,                           -- audio of completed transcribe tasks
+  prepare_compute_ms INTEGER, transcribe_compute_ms INTEGER,
+  failures INTEGER, expired INTEGER,          -- leases ended 'failed' / 'expired'
+  first_task_at INTEGER, last_task_at INTEGER);  -- first / last completion
+
 CREATE TABLE sched_vtime (                    -- §8.2
   queue_id INTEGER NOT NULL REFERENCES queues ON DELETE CASCADE,
   class TEXT NOT NULL,                        -- '' = queue level; 'low'|'medium'|'high'
@@ -257,6 +266,8 @@ Notes:
 - Timestamps are Unix milliseconds in UTC.
 - Migrations are embedded (`embed.FS`), applied on start, and versioned with `PRAGMA user_version`.
 - Invariant: at most one live lease per task (`ended_at IS NULL`). The claim transaction enforces it, and a test pins it (§11).
+- **Worker counters** (`worker_stats`) are updated in the transaction that ends a lease, so they always agree with task outcomes. A completion (transcribe result or accepted prepare) counts its task by kind, its compute time, its audio (transcribe only, so prepare time does not skew the realtime factor) and its job, if no other task of that job is already done by the worker. That check needs no extra table: a done task never changes state or worker again and goes only with its job, so each (worker, job) pair counts once. `failed` and `expired` leases count as failures and expiries; a release or a cancellation (worker rejected, sibling task failed the job) counts as nothing. They are durable and built in; the Prometheus metrics (§10.2) stay for time series. `GET /admin/workers` returns them as `stats`, and the Workers page shows tasks done, audio hours, average realtime factor and failure rate.
+- **Counter backfill.** The migration that added the counters filled them from what was then retained: completions from done tasks (kept as long as their job, `job_retention`), timed by their done lease if it was still kept, else by their job's completion; failures and expiries from ended leases (kept 30 days). Older history is not counted.
 
 ---
 
@@ -439,7 +450,7 @@ The server validates the result: segment times must be monotonic, within the tas
 `/` redirects to `/ui`. Pages:
 
 - **Dashboard**: queue depths, running tasks, workers online, throughput (audio-hours per hour), and each queue's **actual vs configured share** (§8.2).
-- **Workers**: pending first, with the facts list (including sandbox level) and approve (queue picker), pause, resume and reject buttons; last seen; current leases.
+- **Workers**: a summary table (tasks done, audio hours, average realtime factor, failure rate, last task; the breakdown on hover), then one card per worker, pending first, with the facts list (including sandbox level), its work counters (§4.3) and approve (queue picker), pause, resume and reject buttons; last seen; current leases.
 - **Queues**: create, edit (weight is admin-only) and list jobs; per-queue grants.
 - **Jobs**: filters, detail view, delete, transcript download.
 - **Users and clients**: create, disable, grant roles, mint tokens (shown once).
@@ -648,7 +659,7 @@ If the tasks ran on different whisper.cpp versions, the header lists all of them
 | Job, transcript and tasks | `completed_at + job_retention` (default 30 d) unless deleted earlier | `WHISPER_JOB_RETENTION` |
 | Queued jobs never processed | not purged; they stay visible on the dashboard and in `whisper_queue_oldest_pending_seconds` | — |
 | Pending workers | 7 d after registration (polling does not extend it, so a pending worker cannot hold a slot under `--max-pending-workers` indefinitely), with their grants and the grants scoped to them | `WHISPER_PENDING_WORKER_TTL` |
-| Rejected workers | 30 d after rejection, with their grants. Until then the worker's token gets a "rejected" answer telling it to exit; afterwards the token is simply unknown | `WHISPER_REJECTED_WORKER_RETENTION` |
+| Rejected workers | 30 d after rejection, with their grants and work counters (§4.3); the `worker.prune` audit entry keeps the final counters of a worker that did any work. Until then the worker's token gets a "rejected" answer telling it to exit; afterwards the token is simply unknown | `WHISPER_REJECTED_WORKER_RETENTION` |
 | Ended leases | 30 d (debugging) | — |
 | Orphan `.part` files | on startup and daily | — |
 
@@ -780,7 +791,7 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | `whisper_worker_info` | gauge (=1) | `worker`, `hostname`, `description`, `engine_version`, `ffmpeg_version`, `sandbox_level`, `arch` | Join target |
 | `whisper_worker_last_seen_timestamp_seconds` | gauge | `worker` | Dead-worker alert |
 | `whisper_worker_slots` / `whisper_worker_slots_busy` | gauge | `worker` | Utilization |
-| `whisper_worker_audio_seconds_total` | counter | `worker`, `model` | Throughput per machine |
+| `whisper_worker_audio_seconds_total` | counter | `worker`, `model` | Throughput per machine (resets with the process; the durable per-worker totals are the `worker_stats` counters, §4.3) |
 | `whisper_worker_child_rss_bytes` | gauge | `worker` | Memory sizing (§7.3) |
 | `whisper_http_requests_total` | counter | `route`, `method`, `code` | |
 | `whisper_http_request_duration_seconds` | histogram | `route` | |
