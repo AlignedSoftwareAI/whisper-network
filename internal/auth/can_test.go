@@ -208,6 +208,18 @@ func TestCanMatrix(t *testing.T) {
 		{"worker with admin grant cannot audit", worker(admin), ActViewAudit, Resource{}, false},
 		{"worker cannot create client", worker(caAll), ActCreateClient, Resource{}, false},
 		{"worker cannot view metrics UI", worker(admin), ActViewMetricsUI, Resource{}, false},
+		{"worker cannot see job workers", worker(admin), ActViewJobWorkers, Resource{Queue: "A", WorkerID: "w1"}, false},
+
+		// --- who may see which worker runs a job ---
+		{"admin sees job workers", user(admin), ActViewJobWorkers, Resource{Queue: "B", WorkerID: "w2"}, true},
+		{"qa sees job workers on A", user(qaA), ActViewJobWorkers, Resource{Queue: "A", WorkerID: "w2"}, true},
+		{"qa(A) job workers on B denied", user(qaA), ActViewJobWorkers, Resource{Queue: "B", WorkerID: "w2"}, false},
+		{"wa* sees job workers", user(waAll), ActViewJobWorkers, Resource{Queue: "B", WorkerID: "w2"}, true},
+		{"waW1 sees w1 on a job", user(waW1), ActViewJobWorkers, Resource{Queue: "B", WorkerID: "w1"}, true},
+		{"waW1 w2 on a job denied", user(waW1), ActViewJobWorkers, Resource{Queue: "B", WorkerID: "w2"}, false},
+		{"submit job workers denied", client(submitA), ActViewJobWorkers, Resource{Queue: "A", WorkerID: "w1"}, false},
+		{"viewall job workers denied", client(viewA), ActViewJobWorkers, Resource{Queue: "A", WorkerID: "w1"}, false},
+		{"process (as user) job workers denied", user(processA), ActViewJobWorkers, Resource{Queue: "A", WorkerID: "w1"}, false},
 
 		// --- clients/users cannot do worker actions ---
 		{"client cannot lease", client(processA), ActLeaseTask, qA, false},
