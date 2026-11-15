@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -13,36 +14,65 @@ import (
 	"github.com/deweysasser/whisper-network/internal/store"
 )
 
-// workersView is the workers page.
+// workersView is the workers table.
 type workersView struct {
-	Workers []workerView
+	Rows   []workerRow
+	State  string // the state filter in force; empty for all
+	States []api.WorkerState
 }
 
-// workerView is one worker card. CSRF is carried per card because the card
-// is also rendered alone as an htmx fragment.
-type workerView struct {
-	CSRF         string
-	ID           string
-	State        api.WorkerState
+// workerRow is one row of the workers table. CSRF is carried per row
+// because the row is also rendered alone, as the htmx fragment that answers
+// a pause or resume from the table.
+//
+// Per-worker summary columns are fields here, filled in workerRowFor and
+// rendered as cells in the "worker-row" template with headers in the
+// workers page's table. The work counters (tasks done, audio hours, average
+// realtime factor, failure rate) are the first; the current lease count
+// (issue #27) is still to come.
+type workerRow struct {
+	CSRF       string
+	ID         string
+	Name       string // description, else hostname, else the short id
+	Hostname   string // shown under Name when Name is the description
+	State      api.WorkerState
+	Queues     []string // queues it may process
+	Sandbox    api.SandboxLevel
+	Slots      int
+	SlotsBusy  *int // from the last heartbeat's gauges; nil before one
+	LastSeenAt *time.Time
+	Online     bool
+	Stats      workStats // work counters; the table shows a summary, the page all
+
+	// Compact controls, each shown only when the principal may use it.
+	CanApprove          bool // links to the detail page's approve form
+	CanPause, CanResume bool
+}
+
+// workerDetail is the worker page: the row's summary plus every fact and
+// the full controls.
+//
+// The worker's full statistics come from the embedded row's Stats and are
+// rendered by the "worker-stats" template. Extension point: its current
+// leases (#27) are added as fields here and rendered by the "worker-leases"
+// template on the worker page.
+type workerDetail struct {
+	workerRow
 	Facts        api.WorkerFacts
 	RegisteredAt time.Time
 	DecidedBy    string
 	DecidedAt    *time.Time
-	LastSeenAt   *time.Time
-	Online       bool
 	Gauges       *api.Gauges
-	Queues       []workerQueue
-	Stats        workStats
+	QueueGrants  []workerQueue
+	Back         string // this page, for forms that return here
 
 	// Controls, each shown only when the principal may use it.
-	CanApprove          bool     // lifecycle half (worker_admin)
-	ApproveQueues       []string // queues the principal may grant process on
-	CanPause, CanResume bool
-	CanReject           bool
-	AddQueues           []string // further queues grantable to an active worker
+	ApproveQueues []string // queues the principal may grant process on
+	CanReject     bool
+	AddQueues     []string // further queues grantable to an active worker
 }
 
-// workStats is a worker's counters with the figures the page derives
+// workStats is a worker's counters with the figures the pages derive
 // from them.
 type workStats struct {
 	api.WorkerStats
@@ -65,42 +95,55 @@ type workerQueue struct {
 	CanRevoke bool
 }
 
-// handleWorkers lists workers, pending first. Who may list and which
-// workers they see mirror GET /admin/workers: a queue_admin sees every
-// worker (to approve them for its queues), a worker_admin only those in
-// scope.
+// workerStates are the states the table filters by, in display order.
+var workerStates = []api.WorkerState{api.WorkerPending, api.WorkerActive, api.WorkerPaused, api.WorkerRejected}
+
+// mayViewWorker mirrors GET /admin/workers: a queue_admin sees every worker
+// (to approve them for its queues), a worker_admin only those in scope.
+func mayViewWorker(rc *reqCtx, id string) bool {
+	if !mayListWorkers(rc.P) {
+		return false
+	}
+	return holdsRole(rc.P, api.RoleQueueAdmin) || rc.can(auth.ActViewWorker, auth.Resource{WorkerID: id})
+}
+
+// handleWorkers lists workers, pending first, optionally filtered by state.
 func (u *UI) handleWorkers(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
 	if !mayListWorkers(rc.P) {
 		return u.deny(r, rc, "worker_admin or queue_admin required")
+	}
+	v := workersView{States: workerStates}
+	if s := r.URL.Query().Get("state"); s != "" {
+		if !slices.Contains(workerStates, api.WorkerState(s)) {
+			return badRequest("Unknown worker state.")
+		}
+		v.State = s
 	}
 	ctx := r.Context()
 	ws, err := u.srv.Store().ListWorkers(ctx)
 	if err != nil {
 		return err
 	}
-	queues, err := u.queueNames(ctx)
-	if err != nil {
-		return err
-	}
-	queueAdmin := holdsRole(rc.P, api.RoleQueueAdmin)
-	var v workersView
 	for i := range ws {
 		wk := &ws[i]
-		if !queueAdmin && !rc.can(auth.ActViewWorker, auth.Resource{WorkerID: wk.ID}) {
+		if v.State != "" && string(wk.State) != v.State {
 			continue
 		}
-		wv, err := u.workerView(ctx, rc, wk, queues)
+		if !mayViewWorker(rc, wk.ID) {
+			continue
+		}
+		grants, err := u.processGrants(ctx, wk)
 		if err != nil {
 			return err
 		}
-		v.Workers = append(v.Workers, *wv)
+		v.Rows = append(v.Rows, u.workerRowFor(rc, wk, grants))
 	}
-	slices.SortStableFunc(v.Workers, func(a, b workerView) int { return stateRank(a.State) - stateRank(b.State) })
+	slices.SortStableFunc(v.Rows, func(a, b workerRow) int { return stateRank(a.State) - stateRank(b.State) })
 	u.render(w, r, rc, http.StatusOK, "workers", "Workers", v)
 	return nil
 }
 
-// stateRank orders the workers page: pending first, rejected last.
+// stateRank orders the workers table: pending first, rejected last.
 func stateRank(s api.WorkerState) int {
 	switch s {
 	case api.WorkerPending:
@@ -113,30 +156,99 @@ func stateRank(s api.WorkerState) int {
 	return 3
 }
 
-func (u *UI) workerView(ctx context.Context, rc *reqCtx, wk *store.Worker, queues []string) (*workerView, error) {
+// handleWorker shows one worker. A worker the principal may not see is
+// reported as missing, so its existence does not leak.
+func (u *UI) handleWorker(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
+	id := r.PathValue("id")
+	if !mayViewWorker(rc, id) {
+		return u.hide(r, rc, "worker not visible")
+	}
+	ctx := r.Context()
+	wk, err := u.srv.Store().WorkerByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	queues, err := u.queueNames(ctx)
+	if err != nil {
+		return err
+	}
+	v, err := u.workerDetailFor(ctx, rc, wk, queues)
+	if err != nil {
+		return err
+	}
+	u.render(w, r, rc, http.StatusOK, "worker", "Worker "+v.Name, v)
+	return nil
+}
+
+// processGrants returns the worker's process grants.
+func (u *UI) processGrants(ctx context.Context, wk *store.Worker) ([]api.Grant, error) {
 	grants, err := u.srv.Ops().WireGrants(ctx, wk.Principal())
 	if err != nil {
 		return nil, err
 	}
-	now := u.srv.Now()
-	res := auth.Resource{WorkerID: wk.ID}
-	v := &workerView{CSRF: rc.CSRF, ID: wk.ID, State: wk.State, Facts: wk.Facts, RegisteredAt: wk.RegisteredAt,
-		DecidedBy: wk.DecidedBy, DecidedAt: wk.DecidedAt, LastSeenAt: wk.LastSeenAt, Online: isOnline(wk, now),
-		Stats: newWorkStats(wk.Stats)}
-	if len(wk.Gauges) > 0 {
-		var g api.Gauges
-		if json.Unmarshal(wk.Gauges, &g) == nil {
-			v.Gauges = &g
-		}
+	return slices.DeleteFunc(grants, func(g api.Grant) bool { return g.Role != api.RoleProcess }), nil
+}
+
+// workerName is how the UI names a worker: its description, else its
+// hostname, else its abbreviated id.
+func workerName(wk *store.Worker) string {
+	switch {
+	case strings.TrimSpace(wk.Facts.Description) != "":
+		return wk.Facts.Description
+	case strings.TrimSpace(wk.Facts.Hostname) != "":
+		return wk.Facts.Hostname
 	}
+	return shortID(wk.ID)
+}
+
+// workerGauges decodes the worker's latest heartbeat gauges, or nil.
+func workerGauges(wk *store.Worker) *api.Gauges {
+	if len(wk.Gauges) == 0 {
+		return nil
+	}
+	var g api.Gauges
+	if json.Unmarshal(wk.Gauges, &g) != nil {
+		return nil
+	}
+	return &g
+}
+
+// workerRowFor builds the table row for wk, given its process grants.
+func (u *UI) workerRowFor(rc *reqCtx, wk *store.Worker, process []api.Grant) workerRow {
+	res := auth.Resource{WorkerID: wk.ID}
+	row := workerRow{CSRF: rc.CSRF, ID: wk.ID, Name: workerName(wk), State: wk.State,
+		Sandbox: wk.Facts.SandboxLevel, Slots: wk.Facts.Slots, LastSeenAt: wk.LastSeenAt,
+		Online: isOnline(wk, u.srv.Now()), Stats: newWorkStats(wk.Stats)}
+	if row.Name == wk.Facts.Description && wk.Facts.Hostname != row.Name {
+		row.Hostname = wk.Facts.Hostname
+	}
+	if g := workerGauges(wk); g != nil {
+		row.SlotsBusy = &g.SlotsBusy
+	}
+	for _, g := range process {
+		row.Queues = append(row.Queues, strings.TrimPrefix(g.Scope, "queue:"))
+	}
+	row.CanApprove = wk.State == api.WorkerPending && rc.can(auth.ActApproveWorker, res)
+	row.CanPause = wk.State == api.WorkerActive && rc.can(auth.ActPauseWorker, res)
+	row.CanResume = wk.State == api.WorkerPaused && rc.can(auth.ActResumeWorker, res)
+	return row
+}
+
+// workerDetailFor builds the worker page for wk; queues are every queue's
+// name, from which the grantable ones are offered.
+func (u *UI) workerDetailFor(ctx context.Context, rc *reqCtx, wk *store.Worker, queues []string) (*workerDetail, error) {
+	process, err := u.processGrants(ctx, wk)
+	if err != nil {
+		return nil, err
+	}
+	v := &workerDetail{workerRow: u.workerRowFor(rc, wk, process), Facts: wk.Facts,
+		RegisteredAt: wk.RegisteredAt, DecidedBy: wk.DecidedBy, DecidedAt: wk.DecidedAt,
+		Gauges: workerGauges(wk), Back: workerPath(wk.ID)}
 	held := map[string]bool{}
-	for _, g := range grants {
-		if g.Role != api.RoleProcess {
-			continue
-		}
+	for _, g := range process {
 		name := strings.TrimPrefix(g.Scope, "queue:")
 		held[name] = true
-		v.Queues = append(v.Queues, workerQueue{Name: name,
+		v.QueueGrants = append(v.QueueGrants, workerQueue{Name: name,
 			CanRevoke: auth.CanGrantTo(rc.P.Principal, []api.Grant{g}) == nil})
 	}
 	var grantable []string
@@ -147,7 +259,6 @@ func (u *UI) workerView(ctx context.Context, rc *reqCtx, wk *store.Worker, queue
 	}
 	switch wk.State {
 	case api.WorkerPending:
-		v.CanApprove = rc.can(auth.ActApproveWorker, res)
 		if v.CanApprove {
 			v.ApproveQueues = grantable
 		}
@@ -158,11 +269,12 @@ func (u *UI) workerView(ctx context.Context, rc *reqCtx, wk *store.Worker, queue
 			}
 		}
 	}
-	v.CanPause = wk.State == api.WorkerActive && rc.can(auth.ActPauseWorker, res)
-	v.CanResume = wk.State == api.WorkerPaused && rc.can(auth.ActResumeWorker, res)
-	v.CanReject = wk.State != api.WorkerRejected && rc.can(auth.ActRejectWorker, res)
+	v.CanReject = wk.State != api.WorkerRejected && rc.can(auth.ActRejectWorker, auth.Resource{WorkerID: wk.ID})
 	return v, nil
 }
+
+// workerPath is the worker's detail page.
+func workerPath(id string) string { return "/ui/workers/" + url.PathEscape(id) }
 
 // handleApproveWorker approves a worker for the chosen queues: worker_admin
 // over the worker and queue_admin on every chosen queue (auth.CanApproveWorker,
@@ -207,26 +319,27 @@ func (u *UI) handleWorkerState(w http.ResponseWriter, r *http.Request, rc *reqCt
 	return u.workerDone(w, r, rc, id)
 }
 
-// workerDone answers a worker action: the refreshed card for htmx, or a
-// redirect back to the list.
+// workerDone answers a worker action. An htmx request from a table row
+// (fragment=row) gets the refreshed row; anything else is sent to "back"
+// (checked like a login's next), by default the worker's page.
 func (u *UI) workerDone(w http.ResponseWriter, r *http.Request, rc *reqCtx, id string) error {
-	if !isHTMX(r) {
-		http.Redirect(w, r, "/ui/workers#w-"+id, http.StatusSeeOther)
+	if isHTMX(r) && r.PostFormValue("fragment") == "row" {
+		wk, err := u.srv.Store().WorkerByID(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		grants, err := u.processGrants(r.Context(), wk)
+		if err != nil {
+			return err
+		}
+		u.renderFragment(w, http.StatusOK, "workers", "worker-row", u.workerRowFor(rc, wk, grants))
 		return nil
 	}
-	wk, err := u.srv.Store().WorkerByID(r.Context(), id)
-	if err != nil {
-		return err
+	back := workerPath(id)
+	if b := r.PostFormValue("back"); b != "" {
+		back = safeNext(b)
 	}
-	queues, err := u.queueNames(r.Context())
-	if err != nil {
-		return err
-	}
-	v, err := u.workerView(r.Context(), rc, wk, queues)
-	if err != nil {
-		return err
-	}
-	u.renderFragment(w, http.StatusOK, "workers", "worker", v)
+	u.redirect(w, r, back)
 	return nil
 }
 

@@ -50,7 +50,7 @@ func TestApproveWorker(t *testing.T) {
 
 	// worker_admin alone cannot hand out queue access...
 	b := e.login("lifecycle")
-	_, body := b.get("/ui/workers")
+	_, body := b.get("/ui/workers/" + wid)
 	assert.Contains(t, body, "Approve")
 	assert.NotContains(t, body, `name="queue"`, "no queue to offer")
 	resp, _ := b.post("/ui/workers/"+wid+"/approve", url.Values{"queue": {"public"}})
@@ -59,19 +59,18 @@ func TestApproveWorker(t *testing.T) {
 
 	// ...and queue_admin on public does not cover other.
 	b = e.login("both")
-	_, body = b.get("/ui/workers")
+	_, body = b.get("/ui/workers/" + wid)
 	assert.Contains(t, body, `value="public"`)
 	assert.NotContains(t, body, `value="other"`)
 	resp, _ = b.post("/ui/workers/"+wid+"/approve", url.Values{"queue": {"public", "other"}})
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Equal(t, api.WorkerPending, workerState(t, e, wid))
 
-	// Approving through htmx returns the refreshed card.
+	// Approving through htmx navigates back to the worker's page.
 	resp, body = b.do("POST", "/ui/workers/"+wid+"/approve", url.Values{"queue": {"public"}, "csrf": {b.csrf}},
 		map[string]string{"HX-Request": "true"})
-	require.Equal(t, http.StatusOK, resp.StatusCode, body)
-	assert.True(t, strings.HasPrefix(strings.TrimSpace(body), `<article class="card worker state-active"`), body)
-	assert.NotContains(t, body, "<html")
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, body)
+	assert.Equal(t, "/ui/workers/"+wid, resp.Header.Get("HX-Redirect"))
 	assert.Equal(t, api.WorkerActive, workerState(t, e, wid))
 	assert.Equal(t, []string{"public"}, processQueues(t, e, wid))
 
@@ -92,7 +91,7 @@ func TestWorkerLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, resp.StatusCode, "a pending worker is approved, not resumed")
 	resp, _ = b.post("/ui/workers/"+wid+"/approve", url.Values{"queue": {"public"}})
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	assert.Equal(t, "/ui/workers#w-"+wid, resp.Header.Get("Location"))
+	assert.Equal(t, "/ui/workers/"+wid, resp.Header.Get("Location"))
 
 	resp, _ = b.post("/ui/workers/"+wid+"/pause", nil)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
@@ -105,14 +104,15 @@ func TestWorkerLifecycle(t *testing.T) {
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	assert.Equal(t, api.WorkerActive, workerState(t, e, wid))
 
-	// Queue access can be extended and revoked from the card.
+	// Queue access can be extended and revoked from the worker's page.
 	e.queue("other")
-	_, body = b.get("/ui/workers")
+	_, body = b.get("/ui/workers/" + wid)
 	assert.Contains(t, body, `<option value="queue:other">`)
+	assert.Contains(t, body, `name="back" value="/ui/workers/`+wid+`"`)
 	resp, _ = b.post("/ui/grants", url.Values{"principal": {"worker:" + wid}, "role": {"process"},
-		"scope": {"queue:other"}, "back": {"/ui/workers"}})
+		"scope": {"queue:other"}, "back": {"/ui/workers/" + wid}})
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	assert.Equal(t, "/ui/workers", resp.Header.Get("Location"))
+	assert.Equal(t, "/ui/workers/"+wid, resp.Header.Get("Location"))
 	assert.ElementsMatch(t, []string{"public", "other"}, processQueues(t, e, wid))
 	resp, _ = b.post("/ui/grants/revoke", url.Values{"principal": {"worker:" + wid}, "role": {"process"},
 		"scope": {"queue:public"}, "back": {"https://evil.example/"}})
@@ -123,7 +123,7 @@ func TestWorkerLifecycle(t *testing.T) {
 	resp, _ = b.post("/ui/workers/"+wid+"/reject", nil)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	assert.Equal(t, api.WorkerRejected, workerState(t, e, wid))
-	_, body = b.get("/ui/workers")
+	_, body = b.get("/ui/workers/" + wid)
 	assert.NotContains(t, body, ">Reject<")
 
 	resp, _ = b.post("/ui/workers/"+wid+"/explode", nil)

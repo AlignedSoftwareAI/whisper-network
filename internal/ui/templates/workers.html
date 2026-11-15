@@ -1,108 +1,70 @@
 {{define "content"}}
 <h1>Workers</h1>
-{{with .Data.Workers}}
 <section class="card">
+  <form method="get" action="/ui/workers" class="row">
+    <label>State
+      <select name="state">
+        <option value="">any</option>
+        {{range .Data.States}}<option value="{{.}}"{{if eq (print .) $.Data.State}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </label>
+    <button type="submit">Filter</button>
+  </form>
   <div class="scroll">
-  <table class="data worker-stats">
-    <thead><tr><th>Worker</th><th>State</th><th class="n">Tasks done</th><th class="n">Audio hours</th><th class="n" title="Average realtime factor: audio seconds transcribed per compute second">Avg RTF</th><th class="n" title="Failed and expired leases, of completed, failed and expired">Failure rate</th><th>Last task</th></tr></thead>
+  <table class="data workers">
+    <thead><tr>
+      <th scope="col">Worker</th><th scope="col">State</th><th scope="col">Queues</th><th scope="col">Sandbox</th>
+      <th scope="col" class="n">Slots</th><th scope="col">Last seen</th>
+      <th scope="col" class="n">Tasks done</th><th scope="col" class="n">Audio hours</th>
+      <th scope="col" class="n" title="Average realtime factor: audio seconds transcribed per compute second">Avg RTF</th>
+      <th scope="col" class="n" title="Failed and expired leases, of completed, failed and expired">Failure rate</th>
+      {{- /* Extension point: further summary columns (#27) add their headers here, matching cells in "worker-row". */}}
+      <th scope="col">Actions</th>
+    </tr></thead>
     <tbody>
-    {{range .}}
-    <tr>
-      <td><a href="#w-{{.ID}}">{{.Facts.Hostname}}</a></td>
-      <td><span class="badge state-{{.State}}">{{.State}}</span></td>
-      <td class="n" title="{{.Stats.PrepareTasks}} prepare · {{.Stats.TranscribeTasks}} transcribe · {{.Stats.Jobs}} jobs">{{.Stats.TasksDone}}</td>
-      <td class="n">{{hours .Stats.AudioHours}}</td>
-      <td class="n">{{if .Stats.RTF}}{{num .Stats.RTF}}×{{else}}—{{end}}</td>
-      <td class="n" title="{{.Stats.Failures}} failed · {{.Stats.ExpiredLeases}} expired">{{if or .Stats.TasksDone .Stats.Failures .Stats.ExpiredLeases}}{{pct .Stats.FailurePct}}{{else}}—{{end}}</td>
-      <td>{{if .Stats.LastTaskAt}}{{ago .Stats.LastTaskAt}}{{else}}—{{end}}</td>
-    </tr>
+    {{range .Data.Rows}}{{template "worker-row" .}}
+    {{else}}
+    <tr><td colspan="11" class="muted">{{if .Data.State}}No workers in state {{.Data.State}}.{{else}}No workers are registered, or none you may manage.{{end}}</td></tr>
     {{end}}
     </tbody>
   </table>
   </div>
 </section>
 {{end}}
-{{range .Data.Workers}}{{template "worker" .}}{{else}}<p class="muted">No workers are registered, or none you may manage.</p>{{end}}
+
+{{/* worker-row is one table row; it is also the htmx fragment that answers
+     a pause or resume from the table. */}}
+{{define "worker-row"}}
+<tr id="w-{{.ID}}" class="worker-{{.State}}">
+  <td>
+    <a href="/ui/workers/{{.ID}}" title="{{.ID}}">{{.Name}}</a>
+    {{- with .Hostname}}<div class="muted small">{{.}}</div>{{end}}
+  </td>
+  <td><span class="badge state-{{.State}}">{{.State}}</span></td>
+  <td>{{range .Queues}}<span class="chip">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</td>
+  <td><span class="badge sandbox-{{.Sandbox}}">{{.Sandbox}}</span></td>
+  <td class="n" title="busy / total, from the last heartbeat">{{with .SlotsBusy}}{{.}}{{else}}–{{end}}/{{.Slots}}</td>
+  <td title="{{whenp .LastSeenAt}}">{{ago .LastSeenAt}}{{if .Online}} <span class="badge online">online</span>{{end}}</td>
+  {{- with .Stats}}
+  <td class="n" title="{{.PrepareTasks}} prepare · {{.TranscribeTasks}} transcribe · {{.Jobs}} jobs">{{.TasksDone}}</td>
+  <td class="n">{{hours .AudioHours}}</td>
+  <td class="n">{{if .RTF}}{{num .RTF}}×{{else}}—{{end}}</td>
+  <td class="n" title="{{.Failures}} failed · {{.ExpiredLeases}} expired">{{if or .TasksDone .Failures .ExpiredLeases}}{{pct .FailurePct}}{{else}}—{{end}}</td>
+  {{- end}}
+  <td class="row-actions">
+    {{- if .CanApprove}}<a class="button small" href="/ui/workers/{{.ID}}#approve">Approve</a>{{end}}
+    {{- if .CanPause}}{{template "worker-row-action" (dict "W" . "Verb" "pause" "Label" "Pause")}}{{end}}
+    {{- if .CanResume}}{{template "worker-row-action" (dict "W" . "Verb" "resume" "Label" "Resume")}}{{end}}
+  </td>
+</tr>
 {{end}}
 
-{{define "worker"}}
-<article class="card worker state-{{.State}}" id="w-{{.ID}}">
-  <header class="row">
-    <h2>{{.Facts.Hostname}}</h2>
-    <span class="badge state-{{.State}}">{{.State}}</span>
-    {{if .Online}}<span class="badge online">online</span>{{end}}
-  </header>
-  {{with .Facts.Description}}<p>{{.}}</p>{{end}}
-  <dl class="facts">
-    <dt>ID</dt><dd><code>{{.ID}}</code></dd>
-    <dt>Sandbox</dt><dd><span class="badge sandbox-{{.Facts.SandboxLevel}}">{{.Facts.SandboxLevel}}</span></dd>
-    <dt>CPU</dt><dd>{{.Facts.CPUModel}} · {{.Facts.Cores}} cores · {{bytes .Facts.MemBytes}}</dd>
-    <dt>Platform</dt><dd>{{.Facts.OS}}/{{.Facts.Arch}}{{with .Facts.Version}} · whisper-network {{.}}{{end}}</dd>
-    <dt>Engine</dt><dd>{{.Facts.EngineVersion}}{{with .Facts.FFmpegVersion}} · ffmpeg {{.}}{{end}}</dd>
-    <dt>Models</dt><dd>{{join .Facts.Models ", "}}</dd>
-    <dt>Slots</dt><dd>{{.Facts.Slots}}{{with .Gauges}} · {{.SlotsBusy}} busy (current leases) · load {{num .Load1}}{{end}}</dd>
-    <dt>Registered</dt><dd>{{when .RegisteredAt}}</dd>
-    <dt>Last seen</dt><dd>{{ago .LastSeenAt}}</dd>
-    {{with .DecidedBy}}<dt>Decided by</dt><dd>{{.}}</dd>{{end}}
-    <dt>Work</dt>
-    <dd class="work">{{with .Stats}}{{.TasksDone}} tasks ({{.PrepareTasks}} prepare, {{.TranscribeTasks}} transcribe) in {{.Jobs}} jobs
-      · {{hours .AudioHours}} h audio · {{dur .ComputeTime}} compute{{if .RTF}} · {{num .RTF}}× realtime{{end}}
-      · {{.Failures}} failed, {{.ExpiredLeases}} expired{{if .FirstTaskAt}}
-      · first task {{whenp .FirstTaskAt}}, last {{whenp .LastTaskAt}}{{end}}{{end}}</dd>
-    <dt>Queues</dt>
-    <dd>
-      {{range .Queues}}
-      <span class="chip">{{.Name}}{{if .CanRevoke}}
-        <form method="post" action="/ui/grants/revoke" class="inline">
-          {{template "csrf" $.CSRF}}
-          <input type="hidden" name="principal" value="worker:{{$.ID}}">
-          <input type="hidden" name="role" value="process">
-          <input type="hidden" name="scope" value="queue:{{.Name}}">
-          <input type="hidden" name="back" value="/ui/workers">
-          <button type="submit" class="link" title="Stop this worker processing {{.Name}}" aria-label="Revoke {{.Name}}">×</button>
-        </form>{{end}}</span>
-      {{else}}<span class="muted">none</span>{{end}}
-    </dd>
-  </dl>
-
-  {{if .CanApprove}}
-  <form method="post" action="/ui/workers/{{.ID}}/approve" class="approve"
-        hx-post="/ui/workers/{{.ID}}/approve" hx-target="#w-{{.ID}}" hx-swap="outerHTML">
-    {{template "csrf" .CSRF}}
-    <fieldset>
-      <legend>Approve for queues (sandbox: {{.Facts.SandboxLevel}})</legend>
-      {{range .ApproveQueues}}<label class="check"><input type="checkbox" name="queue" value="{{.}}"> {{.}}</label>{{else}}<span class="muted">You are not queue_admin on any queue; the worker will be active but idle.</span>{{end}}
-    </fieldset>
-    <button type="submit">Approve</button>
-  </form>
-  {{end}}
-
-  {{if .AddQueues}}
-  <form method="post" action="/ui/grants" class="row">
-    {{template "csrf" .CSRF}}
-    <input type="hidden" name="principal" value="worker:{{.ID}}">
-    <input type="hidden" name="role" value="process">
-    <input type="hidden" name="back" value="/ui/workers">
-    <label>Add queue
-      <select name="scope">{{range .AddQueues}}<option value="queue:{{.}}">{{.}}</option>{{end}}</select>
-    </label>
-    <button type="submit">Grant</button>
-  </form>
-  {{end}}
-
-  <div class="actions">
-    {{if .CanPause}}{{template "worker-action" (dict "W" . "Verb" "pause" "Label" "Pause")}}{{end}}
-    {{if .CanResume}}{{template "worker-action" (dict "W" . "Verb" "resume" "Label" "Resume")}}{{end}}
-    {{if .CanReject}}{{template "worker-action" (dict "W" . "Verb" "reject" "Label" "Reject")}}{{end}}
-  </div>
-</article>
-{{end}}
-
-{{define "worker-action"}}
+{{define "worker-row-action"}}
 <form method="post" action="/ui/workers/{{.W.ID}}/{{.Verb}}" class="inline"
-      hx-post="/ui/workers/{{.W.ID}}/{{.Verb}}" hx-target="#w-{{.W.ID}}" hx-swap="outerHTML"
-      {{if eq .Verb "reject"}}hx-confirm="Reject this worker? Its token is revoked and its leases are cancelled. This cannot be undone."{{end}}>
+      hx-post="/ui/workers/{{.W.ID}}/{{.Verb}}" hx-target="#w-{{.W.ID}}" hx-swap="outerHTML">
   {{template "csrf" .W.CSRF}}
-  <button type="submit"{{if eq .Verb "reject"}} class="danger"{{end}}>{{.Label}}</button>
+  <input type="hidden" name="fragment" value="row">
+  <input type="hidden" name="back" value="/ui/workers">
+  <button type="submit" class="small">{{.Label}}</button>
 </form>
 {{end}}
