@@ -250,7 +250,8 @@ func (s *Store) Heartbeat(ctx context.Context, leaseID, workerID string, ttl tim
 		if limit := age.of(cost); limit > 0 && now.Sub(fromMS(created)) >= limit {
 			return fmt.Errorf("lease %s: older than its %v limit: %w", l.ID, limit, ErrLeaseGone)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE leases SET expires_at = ? WHERE id = ?`, toMS(exp), leaseID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE leases SET expires_at = ?, heartbeat_at = ? WHERE id = ?`,
+			toMS(exp), toMS(now), leaseID); err != nil {
 			return fmt.Errorf("heartbeat: %w", err)
 		}
 		return nil

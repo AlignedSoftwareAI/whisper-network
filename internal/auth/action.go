@@ -71,6 +71,12 @@ const (
 	// ActViewMetricsUI views the dashboard metrics. Users holding admin,
 	// queue_admin or worker_admin.
 	ActViewMetricsUI
+	// ActViewJobWorkers sees which worker (Resource.WorkerID) is processing,
+	// or processed, a job on Resource.Queue: admin, queue_admin on the
+	// queue, or worker_admin over the worker. The caller must also hold
+	// ActViewJob on the job; without this, the job shows only that it is
+	// running (DESIGN.md §5.3).
+	ActViewJobWorkers
 )
 
 // Resource identifies what an Action targets. Fields irrelevant to the

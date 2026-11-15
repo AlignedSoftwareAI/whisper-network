@@ -36,6 +36,28 @@
   </div>
 </section>
 
+{{with .Data.Running}}
+<section class="card">
+  <h2>Running tasks</h2>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th class="n">#</th><th>Kind</th><th>Worker</th><th class="n">Lease age</th><th>Last heartbeat</th><th class="n">Attempt</th></tr></thead>
+    <tbody>
+    {{range .}}
+    <tr>
+      <td class="n">{{.Seq}}</td><td>{{.Kind}}</td>
+      <td>{{with .Worker}}<a href="/ui/workers/{{.ID}}" title="{{.ID}}">{{.Name}}</a>{{else}}<span class="muted">running</span>{{end}}</td>
+      <td class="n">{{dur .Age}}</td>
+      <td>{{if .HeartbeatAt}}{{ago .HeartbeatAt}}{{else}}<span class="muted">none yet</span>{{end}}</td>
+      <td class="n">{{.Attempt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+{{end}}
+
 <section class="card">
   <h2>Finished tasks</h2>
   <div class="scroll">

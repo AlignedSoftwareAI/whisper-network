@@ -87,11 +87,19 @@
 {{template "worker-stats" $w}}
 {{end}}
 
-{{/* ---- Current leases (issue #27) --------------------------------------
-     Extension point: the leases this worker holds now (job, task, lease
-     age, last heartbeat). Render a <section class="card"> here from fields
-     added to workerDetail. Empty until then. */}}
-{{define "worker-leases"}}{{end}}
+{{/* ---- Current leases ----------------------------------------------------
+     The leases this worker holds now. Leases on jobs the viewer may not see
+     are only counted, so their job ids do not leak. */}}
+{{define "worker-leases"}}
+<section class="card">
+  <h2>Current leases</h2>
+  <p>
+    {{range .Leases}}<span class="chip"><a href="/ui/jobs/{{.JobID}}" title="{{.JobID}}"><code>{{short .JobID}}</code></a> #{{.Seq}} {{.Kind}} · {{dur .Age}}</span>
+    {{else}}{{if not .OtherLeases}}<span class="muted">none</span>{{end}}{{end}}
+    {{with .OtherLeases}}<span class="muted">{{.}} on jobs you cannot view</span>{{end}}
+  </p>
+</section>
+{{end}}
 
 {{/* ---- Statistics ---------------------------------------------------------
      The worker's work counters (DESIGN.md §4.3) in full; the table shows

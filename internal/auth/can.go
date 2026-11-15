@@ -43,6 +43,8 @@ func Can(p Principal, a Action, r Resource) bool {
 			(p.Kind == KindClient && p.ID != "" && p.ID == r.ClientID)
 	case ActSetQueueWeight, ActCreateQueue, ActGrantRoles, ActCreateUser, ActViewAudit:
 		return admin
+	case ActViewJobWorkers:
+		return admin || p.onQueue(api.RoleQueueAdmin, r.Queue) || p.workerAdminFor(r.WorkerID)
 	case ActViewMetricsUI:
 		return p.Kind == KindUser && (admin ||
 			p.holdsAny(api.RoleQueueAdmin) || p.holdsAny(api.RoleWorkerAdmin))
