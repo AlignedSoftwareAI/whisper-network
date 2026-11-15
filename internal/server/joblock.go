@@ -3,10 +3,11 @@ package server
 import "sync"
 
 // jobLocks serializes the few multi-step operations on one job that touch
-// both blobs and the database: accepting canonical audio and assembling the
-// transcript. There is exactly one server process (DESIGN.md non-goals), so
-// an in-memory lock is sufficient. Entries are reference counted and removed
-// when unused, so memory stays bounded by concurrent operations.
+// both blobs and the database: accepting canonical audio, assembling the
+// transcript, and deleting the job. There is exactly one server process
+// (DESIGN.md non-goals), so an in-memory lock is sufficient. Entries are
+// reference counted and removed when unused, so memory stays bounded by
+// concurrent operations.
 type jobLocks struct {
 	mu sync.Mutex
 	m  map[string]*jobLock

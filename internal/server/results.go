@@ -444,6 +444,9 @@ func (s *Server) finishJob(ctx context.Context, jobID string) error {
 	unlock := s.locks.Lock(jobID)
 	defer unlock()
 	job, err := s.st.Job(ctx, jobID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil // deleted meanwhile; nothing to assemble
+	}
 	if err != nil {
 		return err
 	}
