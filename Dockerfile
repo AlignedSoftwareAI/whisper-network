@@ -13,7 +13,9 @@ ARG WHISPER_VERSION=v1.9.5
 ARG WHISPER_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS debian
-FROM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS golang
+# The Go toolchain runs on the build host's platform and cross-compiles, so
+# multi-arch builds never emulate the Go build.
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS golang
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS distroless
 
 # ---------------------------------------------------------------------------
@@ -47,11 +49,13 @@ RUN if [ "${TARGETARCH}" = "amd64" ]; then \
 # whisper-network: pure Go, static.
 FROM golang AS builder
 ARG VERSION=development
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags="-s -w -X 'github.com/deweysasser/whisper-network/program.Version=${VERSION}'" \
       -o /out/whisper-network . \
  && install -d -m 0700 /out/data
