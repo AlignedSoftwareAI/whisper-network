@@ -1,4 +1,4 @@
-.PHONY: test
+.PHONY: test test-race cover fuzz image image-server
 ifeq ($(shell go env GOOS),windows)
 EXE=.exe
 else
@@ -49,15 +49,29 @@ install:
 	go install -ldflags="-X '$(REPO)/program.Version=${VERSION}'"
 
 
-image: .Dockerfile.tmp
-	$(DOCKER) build -f $< --build-arg GO_VERSION=$(GO_VERSION) --build-arg PROGRAM=$(BASENAME) --build-arg VERSION=$(VERSION) --build-arg BASENAME=$(BASENAME) -t $(IMAGE) .
+# `image` builds the full worker image (it can also run `server`).
+# `image-server` builds the minimal distroless server-only image.
+image:
+	$(DOCKER) build --target worker --build-arg GO_VERSION=$(GO_VERSION) --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
-.Dockerfile.tmp: Dockerfile
-	sed -e "s|^ENTRYPOINT.*|ENTRYPOINT [\"/${BASENAME}\"]|" < $< > $@.tmp
-	mv -f $@.tmp $@
+image-server:
+	$(DOCKER) build --target server --build-arg GO_VERSION=$(GO_VERSION) --build-arg VERSION=$(VERSION) -t $(IMAGE)-server .
 
 test:
-	go test -v ./...
+	go test ./...
+
+test-race:
+	go test -race ./...
+
+cover:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
+
+# Short fuzz pass over the hostile-input parsers.
+fuzz:
+	go test ./internal/media -run=^$$ -fuzz=FuzzWAV -fuzztime=30s
+	go test ./internal/media -run=^$$ -fuzz=FuzzFLAC -fuzztime=30s
+	go test ./internal/auth -run=^$$ -fuzz=FuzzParseToken -fuzztime=15s
 
 vet:
 	go vet ./...
@@ -89,3 +103,13 @@ tools:
 	go install honnef.co/go/tools/cmd/staticcheck@latest
 	go install github.com/go-critic/go-critic/cmd/gocritic@latest
 	go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+# Real-engine integration test (internal/e2e/integration_test.go): server and
+# worker containers from INTEGRATION_IMAGE running this tree's binary, real
+# whisper-cli and ffmpeg, tiny.en and jfk.wav from .cache/models/. Builds the
+# image first if it is missing.
+INTEGRATION_IMAGE ?= whisper-network:dev
+.PHONY: integration
+integration:
+	$(DOCKER) image inspect $(INTEGRATION_IMAGE) >/dev/null 2>&1 || $(MAKE) image IMAGE=$(INTEGRATION_IMAGE)
+	WN_IT_IMAGE=$(INTEGRATION_IMAGE) go test -tags integration -run TestIntegration -count=1 -v -timeout 15m ./internal/e2e/

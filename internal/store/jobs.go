@@ -1,0 +1,539 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/deweysasser/whisper-network/internal/api"
+)
+
+// taskCancelled is the internal state of a task whose job failed while it was
+// pending or leased. It is not part of the wire contract; TaskCounts counts
+// such tasks only in Total.
+const taskCancelled = "cancelled"
+
+// Media describes an uploaded original.
+type Media struct {
+	Bytes  int64
+	SHA256 string
+	Type   string // sniffed media type
+}
+
+// Canonical describes canonical audio (16 kHz mono 16-bit FLAC).
+type Canonical struct {
+	Bytes   int64
+	SHA256  string
+	Samples int64
+}
+
+// SampleRange is a half-open range [Start, End) of canonical samples: the
+// input of one transcribe task.
+type SampleRange struct {
+	Start, End int64
+}
+
+// NewJob holds the fields of a job to create.
+type NewJob struct {
+	// ID is optional; when empty the store generates one. Servers that stream
+	// the upload to disk first take it from Store.NewJobID.
+	ID             string
+	QueueID        int64
+	ClientID       string // owner principal id
+	IdempotencyKey string // optional
+	Params         api.JobParams
+	Original       Media
+	// Canonical is nil when the upload needs a prepare task. When set, Ranges
+	// must split it into transcribe tasks and the job starts queued.
+	Canonical *Canonical
+	Ranges    []SampleRange
+}
+
+// Job is a stored job plus the derived data needed for api.Job.
+type Job struct {
+	ID                string
+	QueueID           int64
+	QueueName         string
+	ClientID          string
+	IdempotencyKey    string
+	State             api.JobState
+	Weight            api.Weight
+	Model             string
+	Language          string
+	Prompt            string
+	Label             string
+	Source            string
+	Metadata          json.RawMessage
+	Original          Media
+	OriginalPurgedAt  *time.Time
+	Canonical         *Canonical // nil until canonical audio is accepted
+	CanonicalPurgedAt *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	StartedAt         *time.Time
+	CompletedAt       *time.Time // set when done or failed
+	// ComputeMS is the sum of task compute time, including prepare.
+	ComputeMS         int64
+	Error             string
+	DownloadCount     int
+	FirstDownloadedAt *time.Time
+	LastDownloadedAt  *time.Time
+	Tasks             api.TaskCounts
+}
+
+// Terminal reports whether the job is done or failed.
+func (j *Job) Terminal() bool { return j.State == api.JobDone || j.State == api.JobFailed }
+
+// API builds the wire status document. now is used for the running values
+// of wait_s (not yet started) and elapsed_s (not yet completed).
+func (j *Job) API(now time.Time) api.Job {
+	out := api.Job{
+		ID: j.ID, Queue: j.QueueName, State: j.State, Weight: j.Weight, Model: j.Model, Language: j.Language,
+		Prompt: j.Prompt, Label: j.Label, Source: j.Source, Metadata: j.Metadata,
+		Media: api.MediaInfo{
+			OriginalBytes:  j.Original.Bytes,
+			OriginalType:   j.Original.Type,
+			OriginalPurged: j.OriginalPurgedAt != nil,
+			AudioPurged:    j.CanonicalPurgedAt != nil,
+		},
+		Tasks:       j.Tasks,
+		CreatedAt:   j.CreatedAt,
+		StartedAt:   j.StartedAt,
+		CompletedAt: j.CompletedAt,
+		ComputeS:    float64(j.ComputeMS) / 1000,
+		Downloads:   api.Downloads{Count: j.DownloadCount, First: j.FirstDownloadedAt, Last: j.LastDownloadedAt},
+	}
+	if j.Canonical != nil {
+		out.Media.DurationS = float64(j.Canonical.Samples) / canonicalSampleRate
+	}
+	seconds := func(d time.Duration) *float64 { v := d.Seconds(); return &v }
+	switch {
+	case j.StartedAt != nil:
+		out.WaitS = seconds(j.StartedAt.Sub(j.CreatedAt))
+		end := now
+		if j.CompletedAt != nil {
+			end = *j.CompletedAt
+		}
+		out.ElapsedS = seconds(end.Sub(*j.StartedAt))
+	case !j.Terminal():
+		out.WaitS = seconds(now.Sub(j.CreatedAt))
+	}
+	if j.Error != "" {
+		e := j.Error
+		out.Error = &e
+	}
+	return out
+}
+
+func validRanges(rs []SampleRange, samples int64) error {
+	if len(rs) == 0 {
+		return fmt.Errorf("%w: canonical audio needs at least one task range", ErrInvalid)
+	}
+	var prev int64
+	for i, r := range rs {
+		if r.Start < prev || r.End <= r.Start || r.End > samples {
+			return fmt.Errorf("%w: task range %d [%d,%d) invalid for %d samples", ErrInvalid, i, r.Start, r.End, samples)
+		}
+		prev = r.End
+	}
+	return nil
+}
+
+// CreateJob creates a job and its first tasks. With an IdempotencyKey that
+// this client already used, it returns the existing job and created = false
+// without changing anything.
+//
+// Without Canonical the job starts in preparing with a seq-0 prepare task;
+// with Canonical it starts queued with one transcribe task per range
+// (seq 1..N). The scheduler's reactivation rule is applied either way.
+func (s *Store) CreateJob(ctx context.Context, nj NewJob) (job *Job, created bool, err error) {
+	err = s.InTx(ctx, func(tx *Tx) error {
+		job, created, err = tx.CreateJob(ctx, nj)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return job, created, nil
+}
+
+// CreateJob is Store.CreateJob inside the transaction.
+func (t *Tx) CreateJob(ctx context.Context, nj NewJob) (job *Job, created bool, err error) {
+	s, tx := t.s, t.tx
+	p := nj.Params
+	if p.Weight == "" {
+		p.Weight = api.WeightMedium
+	}
+	if p.Language == "" {
+		p.Language = "en"
+	}
+	switch {
+	case !p.Weight.Valid():
+		return nil, false, fmt.Errorf("%w: weight %q", ErrInvalid, p.Weight)
+	case p.Model == "":
+		return nil, false, fmt.Errorf("%w: model is required", ErrInvalid)
+	case nj.ClientID == "":
+		return nil, false, fmt.Errorf("%w: client id is required", ErrInvalid)
+	}
+	if nj.Canonical != nil {
+		if err := validRanges(nj.Ranges, nj.Canonical.Samples); err != nil {
+			return nil, false, err
+		}
+	} else if len(nj.Ranges) > 0 {
+		return nil, false, fmt.Errorf("%w: task ranges without canonical audio", ErrInvalid)
+	}
+	if nj.ID == "" {
+		nj.ID = s.NewJobID()
+	}
+	if nj.IdempotencyKey != "" {
+		var id string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE client_id = ? AND idempotency_key = ?`,
+			nj.ClientID, nj.IdempotencyKey).Scan(&id)
+		if err == nil {
+			job, err = getJob(ctx, tx, id)
+			return job, false, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, fmt.Errorf("create job: idempotency lookup: %w", err)
+		}
+	}
+	if _, err := queueByID(ctx, tx, nj.QueueID); err != nil {
+		return nil, false, err
+	}
+	if err := reactivate(ctx, tx, nj.QueueID, p.Weight); err != nil {
+		return nil, false, err
+	}
+	now := toMS(s.now())
+	state := api.JobPreparing
+	var canonBytes, canonSamples sql.NullInt64
+	var canonSHA sql.NullString
+	if c := nj.Canonical; c != nil {
+		state = api.JobQueued
+		canonBytes = sql.NullInt64{Int64: c.Bytes, Valid: true}
+		canonSamples = sql.NullInt64{Int64: c.Samples, Valid: true}
+		canonSHA = sql.NullString{String: c.SHA256, Valid: true}
+	}
+	var meta sql.NullString
+	if len(p.Metadata) > 0 {
+		meta = sql.NullString{String: string(p.Metadata), Valid: true}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO jobs (id, queue_id, client_id, idempotency_key, state, weight,
+		model, language, prompt, label, source, metadata, original_bytes, original_sha256, original_type,
+		canonical_bytes, canonical_sha256, audio_samples, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		nj.ID, nj.QueueID, nj.ClientID, sql.NullString{String: nj.IdempotencyKey, Valid: nj.IdempotencyKey != ""},
+		string(state), string(p.Weight), p.Model, p.Language, p.Prompt, p.Label, p.Source, meta,
+		nj.Original.Bytes, nj.Original.SHA256, nj.Original.Type, canonBytes, canonSHA, canonSamples, now, now)
+	if isUnique(err) {
+		return nil, false, fmt.Errorf("create job %s: %w", nj.ID, ErrConflict)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("create job: %w", err)
+	}
+	if nj.Canonical == nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (job_id, seq, kind, cost, state) VALUES (?,0,?,?,?)`,
+			nj.ID, string(api.KindPrepare), s.cfg.PrepareCost, string(api.TaskPending)); err != nil {
+			return nil, false, fmt.Errorf("create prepare task: %w", err)
+		}
+	} else if err := s.insertTranscribeTasks(ctx, tx, nj.ID, p.Model, nj.Ranges); err != nil {
+		return nil, false, err
+	}
+	job, err = getJob(ctx, tx, nj.ID)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *Store) insertTranscribeTasks(ctx context.Context, tx *sql.Tx, jobID, model string, rs []SampleRange) error {
+	for i, r := range rs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (job_id, seq, kind, start_sample, end_sample, cost, state)
+			VALUES (?,?,?,?,?,?,?)`, jobID, i+1, string(api.KindTranscribe), r.Start, r.End,
+			s.TranscribeCost(model, r.End-r.Start), string(api.TaskPending)); err != nil {
+			return fmt.Errorf("create transcribe task %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+const jobSelect = `SELECT j.id, j.queue_id, q.name, j.client_id, COALESCE(j.idempotency_key, ''), j.state, j.weight,
+	j.model, j.language, j.prompt, j.label, j.source, j.metadata, j.original_bytes, j.original_sha256,
+	j.original_type, j.original_purged_at, j.canonical_bytes, j.canonical_sha256, j.audio_samples,
+	j.canonical_purged_at, j.created_at, j.updated_at, j.started_at, j.completed_at, j.compute_ms,
+	COALESCE(j.error, ''), j.download_count, j.first_downloaded_at, j.last_downloaded_at,
+	COUNT(t.seq), COALESCE(SUM(t.state = 'pending'), 0), COALESCE(SUM(t.state = 'leased'), 0),
+	COALESCE(SUM(t.state = 'done'), 0), COALESCE(SUM(t.state = 'failed'), 0), COALESCE(SUM(t.compute_ms), 0)
+	FROM jobs j JOIN queues q ON q.id = j.queue_id LEFT JOIN tasks t ON t.job_id = j.id`
+
+func scanJob(row interface{ Scan(...any) error }) (*Job, error) {
+	var j Job
+	var meta, canonSHA sql.NullString
+	var origPurged, canonBytes, samples, canonPurged, started, completed, computeMS, firstDL, lastDL sql.NullInt64
+	var created, updated, taskCompute int64
+	err := row.Scan(&j.ID, &j.QueueID, &j.QueueName, &j.ClientID, &j.IdempotencyKey, &j.State, &j.Weight,
+		&j.Model, &j.Language, &j.Prompt, &j.Label, &j.Source, &meta, &j.Original.Bytes, &j.Original.SHA256,
+		&j.Original.Type, &origPurged, &canonBytes, &canonSHA, &samples, &canonPurged, &created, &updated,
+		&started, &completed, &computeMS, &j.Error, &j.DownloadCount, &firstDL, &lastDL,
+		&j.Tasks.Total, &j.Tasks.Pending, &j.Tasks.Leased, &j.Tasks.Done, &j.Tasks.Failed, &taskCompute)
+	if err != nil {
+		return nil, err
+	}
+	if meta.Valid {
+		j.Metadata = json.RawMessage(meta.String)
+	}
+	if canonBytes.Valid {
+		j.Canonical = &Canonical{Bytes: canonBytes.Int64, SHA256: canonSHA.String, Samples: samples.Int64}
+	}
+	j.OriginalPurgedAt = optTime(origPurged)
+	j.CanonicalPurgedAt = optTime(canonPurged)
+	j.CreatedAt = fromMS(created)
+	j.UpdatedAt = fromMS(updated)
+	j.StartedAt = optTime(started)
+	j.CompletedAt = optTime(completed)
+	j.ComputeMS = taskCompute
+	if computeMS.Valid {
+		j.ComputeMS = computeMS.Int64
+	}
+	j.FirstDownloadedAt = optTime(firstDL)
+	j.LastDownloadedAt = optTime(lastDL)
+	return &j, nil
+}
+
+func getJob(ctx context.Context, q querier, id string) (*Job, error) {
+	j, err := scanJob(q.QueryRowContext(ctx, jobSelect+` WHERE j.id = ? GROUP BY j.id`, id))
+	if err != nil {
+		return nil, notFound(err, "job "+id)
+	}
+	return j, nil
+}
+
+// Job returns a job by id. Visibility checks are the caller's job.
+func (s *Store) Job(ctx context.Context, id string) (*Job, error) { return getJob(ctx, s.r, id) }
+
+// JobByIdempotencyKey returns the job a client created with key, so a server
+// can answer a retried upload before reading its body.
+func (s *Store) JobByIdempotencyKey(ctx context.Context, clientID, key string) (*Job, error) {
+	j, err := scanJob(s.r.QueryRowContext(ctx,
+		jobSelect+` WHERE j.client_id = ? AND j.idempotency_key = ? GROUP BY j.id`, clientID, key))
+	if err != nil {
+		return nil, notFound(err, "job by idempotency key")
+	}
+	return j, nil
+}
+
+// JobFilter selects jobs for ListJobs.
+type JobFilter struct {
+	QueueID int64
+	// ClientID, when non-empty, restricts the list to that client's jobs
+	// (callers without view_all on the queue).
+	ClientID string
+	States   []api.JobState
+	// Since, when non-zero, keeps only jobs updated after it.
+	Since time.Time
+	// Limit defaults to 100 and is capped at 1000.
+	Limit int
+	// Cursor is the opaque next-page token from a previous call.
+	Cursor string
+}
+
+// ListJobs lists jobs oldest first and returns the cursor for the next page
+// ("" when there is none).
+func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	limit = min(limit, 1000)
+
+	where := []string{"j.queue_id = ?"}
+	args := []any{f.QueueID}
+	if f.ClientID != "" {
+		where = append(where, "j.client_id = ?")
+		args = append(args, f.ClientID)
+	}
+	if len(f.States) > 0 {
+		where = append(where, "j.state IN ("+placeholders(len(f.States))+")")
+		for _, st := range f.States {
+			args = append(args, string(st))
+		}
+	}
+	if !f.Since.IsZero() {
+		where = append(where, "j.updated_at > ?")
+		args = append(args, toMS(f.Since))
+	}
+	if f.Cursor != "" {
+		ts, id, err := decodeCursor(f.Cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		where = append(where, "(j.created_at > ? OR (j.created_at = ? AND j.id > ?))")
+		args = append(args, ts, ts, id)
+	}
+	args = append(args, limit+1)
+	rows, err := s.r.QueryContext(ctx, jobSelect+" WHERE "+strings.Join(where, " AND ")+
+		" GROUP BY j.id ORDER BY j.created_at, j.id LIMIT ?", args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("list jobs: %w", err)
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, "", fmt.Errorf("list jobs: %w", err)
+		}
+		out = append(out, *j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("list jobs: %w", err)
+	}
+	var next string
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[limit-1]
+		next = encodeCursor(toMS(last.CreatedAt), last.ID)
+	}
+	return out, next, nil
+}
+
+func encodeCursor(ts int64, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(ts, 10) + ":" + id))
+}
+
+func decodeCursor(c string) (int64, string, error) {
+	b, err := base64.RawURLEncoding.DecodeString(c)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: cursor", ErrInvalid)
+	}
+	tsStr, id, ok := strings.Cut(string(b), ":")
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if !ok || err != nil {
+		return 0, "", fmt.Errorf("%w: cursor", ErrInvalid)
+	}
+	return ts, id, nil
+}
+
+// DeleteJob deletes a job and its tasks, ending its live leases as
+// cancelled (their holders get ErrLeaseGone). It returns the cancelled lease
+// ids. Blob removal is the caller's job.
+func (s *Store) DeleteJob(ctx context.Context, id string) (cancelled []string, err error) {
+	return inTx1(ctx, s, func(tx *Tx) ([]string, error) { return tx.DeleteJob(ctx, id) })
+}
+
+// DeleteJob is Store.DeleteJob inside the transaction.
+func (t *Tx) DeleteJob(ctx context.Context, id string) (cancelled []string, err error) {
+	cancelled, err = cancelJobLeases(ctx, t.tx, id, t.s.now())
+	if err != nil {
+		return nil, err
+	}
+	res, err := t.tx.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id)
+	if err := mustAffect(res, err, "delete job "+id); err != nil {
+		return nil, err
+	}
+	return cancelled, nil
+}
+
+// cancelJobLeases ends every live lease of a job as cancelled, without
+// touching task state, and returns their ids.
+func cancelJobLeases(ctx context.Context, tx *sql.Tx, jobID string, now time.Time) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `UPDATE leases SET ended_at = ?, outcome = ?
+		WHERE job_id = ? AND ended_at IS NULL RETURNING id`, toMS(now), string(api.OutcomeCancelled), jobID)
+	if err != nil {
+		return nil, fmt.Errorf("cancel leases of job %s: %w", jobID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("cancel leases of job %s: %w", jobID, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// RecordDownload counts a transcript or result download. It does not bump
+// updated_at, so pollers using Since are not woken by their own downloads.
+func (s *Store) RecordDownload(ctx context.Context, id string) error {
+	return s.write(ctx, func(tx *sql.Tx) error {
+		now := toMS(s.now())
+		res, err := tx.ExecContext(ctx, `UPDATE jobs SET download_count = download_count + 1,
+			first_downloaded_at = COALESCE(first_downloaded_at, ?), last_downloaded_at = ? WHERE id = ?`, now, now, id)
+		return mustAffect(res, err, "record download")
+	})
+}
+
+// MarkOriginalPurged records that a job's original upload was deleted.
+func (s *Store) MarkOriginalPurged(ctx context.Context, id string) error {
+	return s.InTx(ctx, func(tx *Tx) error { return tx.MarkOriginalPurged(ctx, id) })
+}
+
+// MarkCanonicalPurged records that a job's canonical audio was deleted.
+func (s *Store) MarkCanonicalPurged(ctx context.Context, id string) error {
+	return s.InTx(ctx, func(tx *Tx) error { return tx.MarkCanonicalPurged(ctx, id) })
+}
+
+// MarkOriginalPurged is Store.MarkOriginalPurged inside the transaction.
+func (t *Tx) MarkOriginalPurged(ctx context.Context, id string) error {
+	return t.markPurged(ctx, id, "original_purged_at")
+}
+
+// MarkCanonicalPurged is Store.MarkCanonicalPurged inside the transaction.
+func (t *Tx) MarkCanonicalPurged(ctx context.Context, id string) error {
+	return t.markPurged(ctx, id, "canonical_purged_at")
+}
+
+func (t *Tx) markPurged(ctx context.Context, id, col string) error {
+	now := toMS(t.s.now())
+	res, err := t.tx.ExecContext(ctx, `UPDATE jobs SET `+col+` = COALESCE(`+col+`, ?), updated_at = ? WHERE id = ?`,
+		now, now, id)
+	return mustAffect(res, err, "mark "+col)
+}
+
+// FailJob fails a job with reason, cancelling its pending and leased tasks
+// and their leases (returned). Failing a failed job is a no-op; failing a
+// done job is ErrConflict.
+func (s *Store) FailJob(ctx context.Context, id, reason string) (cancelled []string, err error) {
+	err = s.write(ctx, func(tx *sql.Tx) error {
+		var state api.JobState
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id = ?`, id).Scan(&state); err != nil {
+			return notFound(err, "job "+id)
+		}
+		switch state {
+		case api.JobFailed:
+			return nil
+		case api.JobDone:
+			return fmt.Errorf("fail job %s: already done: %w", id, ErrConflict)
+		}
+		cancelled, err = failJob(ctx, tx, id, reason, s.now())
+		return err
+	})
+	return cancelled, err
+}
+
+// failJob marks a job failed, cancels its unfinished tasks and their live
+// leases, and returns the cancelled lease ids.
+func failJob(ctx context.Context, tx *sql.Tx, jobID, reason string, now time.Time) ([]string, error) {
+	ids, err := cancelJobLeases(ctx, tx, jobID, now)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ? WHERE job_id = ? AND state IN ('pending','leased')`,
+		taskCancelled, jobID); err != nil {
+		return nil, fmt.Errorf("fail job %s: %w", jobID, err)
+	}
+	ms := toMS(now)
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'failed', error = ?, completed_at = ?, updated_at = ?,
+		compute_ms = (SELECT COALESCE(SUM(compute_ms), 0) FROM tasks WHERE job_id = jobs.id)
+		WHERE id = ? AND state NOT IN ('done','failed')`, reason, ms, ms, jobID); err != nil {
+		return nil, fmt.Errorf("fail job %s: %w", jobID, err)
+	}
+	return ids, nil
+}

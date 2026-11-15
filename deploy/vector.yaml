@@ -1,0 +1,47 @@
+# Ship whisper-network container logs to VictoriaLogs.
+#
+# whisper-network writes one JSON object per line on stdout with VictoriaLogs'
+# default field names (_time, _msg) plus service, mode, version and host.
+# Vector's docker_logs source delivers each line as `.message`; the transform
+# parses it back into an event so VictoriaLogs receives the original fields.
+# Lines that are not JSON objects are dropped (see the transform).
+#
+# Stream fields are set on the sink URL: service, mode and host are
+# low-cardinality. job_id, lease_id and worker_id are ordinary fields and must
+# never be stream fields.
+
+sources:
+  containers:
+    type: docker_logs
+    include_labels: ["wn.logs=true"]
+
+transforms:
+  parse:
+    type: remap
+    inputs: [containers]
+    source: |
+      raw = string!(.message)
+      parsed, err = parse_json(raw)
+      if err != null || !is_object(parsed) {
+        # Not a JSON log line: blank lines, panic traces, and the first-run
+        # admin password banner (a secret, which must not reach the log
+        # store). Drop it; `docker compose logs` still shows it.
+        abort
+      }
+      . = object!(parsed)
+
+sinks:
+  victoria_logs:
+    type: http
+    inputs: [parse]
+    uri: "http://victoria-logs:9428/insert/jsonline?_stream_fields=service,mode,host&_msg_field=_msg&_time_field=_time"
+    method: post
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    compression: gzip
+    request:
+      headers:
+        AccountID: "0"
+        ProjectID: "0"

@@ -1,0 +1,34 @@
+{{define "content"}}
+<h1>Queues</h1>
+<section class="card">
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>Name</th><th>Description</th><th class="n">Weight</th><th class="n">Upload cap</th><th>Jobs</th></tr></thead>
+    <tbody>
+    {{range .Data.Queues}}
+    <tr>
+      <td><a href="/ui/queues/{{.Name}}">{{.Name}}</a></td>
+      <td>{{.Description}}</td>
+      <td class="n">{{.Weight}}</td>
+      <td class="n">{{if .MaxUploadBytes}}{{bytes .MaxUploadBytes}}{{else}}default{{end}}</td>
+      <td>{{if .SeesJobs}}<a href="/ui/queues/{{.Name}}#jobs">view jobs</a>{{else}}<span class="muted">no access</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+{{if .Data.CanCreate}}
+<section class="card">
+  <h2>Create a queue</h2>
+  <form method="post" action="/ui/queues" class="stack">
+    {{template "csrf" .CSRF}}
+    <label>Name <input name="name" pattern="[a-z0-9][a-z0-9\-]{0,62}" required placeholder="meetings"></label>
+    <label>Description <input name="description"></label>
+    <label>Weight <input name="weight" type="number" min="1" max="10000" placeholder="100"></label>
+    <label>Max upload <input name="max_upload" placeholder="default (e.g. 500MiB)"></label>
+    <button type="submit">Create</button>
+  </form>
+</section>
+{{end}}
+{{end}}

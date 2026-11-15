@@ -1,0 +1,72 @@
+{{define "content"}}
+<h1>Dashboard</h1>
+{{with .Data.Stats}}
+{{template "stats" .}}
+{{else}}
+<section class="card">
+  <p>Your queues:</p>
+  {{with .Data.Queues}}
+  <ul>{{range .}}<li><a href="/ui/queues/{{.}}">{{.}}</a></li>{{end}}</ul>
+  {{else}}
+  <p class="muted">You have no access to any queue's jobs yet. Ask an administrator for a role.</p>
+  {{end}}
+</section>
+{{end}}
+{{end}}
+
+{{define "stats"}}
+<div id="stats" hx-get="/ui/dashboard/stats" hx-trigger="every 15s" hx-swap="outerHTML">
+<section class="tiles" aria-label="Fleet">
+  <div class="tile"><span class="big">{{.RunningTasks}}</span><span>running tasks</span></div>
+  <div class="tile"><span class="big">{{.PendingTasks}}</span><span>pending tasks</span></div>
+  <div class="tile"><span class="big">{{.WorkersOnline}}</span><span>workers online</span>
+    <small>{{.WorkersActive}} active · {{.WorkersPaused}} paused · {{if .WorkersPending}}<a href="/ui/workers">{{.WorkersPending}} pending</a>{{else}}0 pending{{end}}</small></div>
+  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span><span>audio-hours / hour</span><small>jobs completed in the last hour</small></div>
+</section>
+
+<section class="card">
+  <h2>Queues</h2>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr>
+      <th>Queue</th><th class="n">Preparing</th><th class="n">Queued</th><th class="n">Running</th><th class="n">Done</th><th class="n">Failed</th>
+      <th class="n">Pending tasks</th><th class="n">Leased</th><th class="n">Oldest pending</th><th class="n">Eligible workers</th>
+    </tr></thead>
+    <tbody>
+    {{range .Queues}}
+    <tr>
+      <td><a href="/ui/queues/{{.Name}}">{{.Name}}</a></td>
+      <td class="n">{{.Preparing}}</td><td class="n">{{.Queued}}</td><td class="n">{{.Running}}</td><td class="n">{{.Done}}</td><td class="n">{{.Failed}}</td>
+      <td class="n">{{.PendingTasks}}</td><td class="n">{{.LeasedTasks}}</td>
+      <td class="n">{{if .PendingTasks}}{{dur .OldestPending}}{{else}}—{{end}}</td>
+      <td class="n{{if and .PendingTasks (not .EligibleWorkers)}} warn{{end}}">{{.EligibleWorkers}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Fleet share</h2>
+  <p class="muted">Configured share is a queue's weight over the weights of queues with work (backlogged, running or recently served).
+  Actual share is the scheduling cost served {{if .ShareSpan}}over the last {{dur .ShareSpan}}{{else}}since the server started{{end}}.</p>
+  <div class="scroll">
+  <table class="data share">
+    <thead><tr><th>Queue</th><th class="n">Weight</th><th>Configured</th><th>Actual</th></tr></thead>
+    <tbody>
+    {{range .Queues}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td class="n">{{.Weight}}</td>
+      <td>{{if .Involved}}<meter min="0" max="100" value="{{num .ConfiguredShare}}"></meter> {{pct .ConfiguredShare}}{{else}}<span class="muted">idle</span>{{end}}</td>
+      <td><meter min="0" max="100" value="{{num .ActualShare}}"></meter> {{pct .ActualShare}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Updated {{when .Generated}}.</p>
+</section>
+</div>
+{{end}}

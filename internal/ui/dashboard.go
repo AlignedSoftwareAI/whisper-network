@@ -1,0 +1,210 @@
+package ui
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/deweysasser/whisper-network/internal/api"
+	"github.com/deweysasser/whisper-network/internal/auth"
+	"github.com/deweysasser/whisper-network/internal/media"
+	"github.com/deweysasser/whisper-network/internal/store"
+)
+
+// throughputWindow is the window for audio-hours per hour.
+const throughputWindow = time.Hour
+
+// dashboardView is the dashboard's data. Fleet statistics are shown only to
+// principals allowed auth.ActViewMetricsUI; everyone else gets links to the
+// queues whose jobs they can see.
+type dashboardView struct {
+	Stats  *statsView
+	Queues []string
+}
+
+// statsView is the refreshable statistics block.
+type statsView struct {
+	Queues                        []queueStatRow
+	RunningTasks, PendingTasks    int
+	WorkersOnline, WorkersActive  int
+	WorkersPending, WorkersPaused int
+	AudioHoursPerHour             float64
+	ShareSpan                     time.Duration // 0: since server start
+	Generated                     time.Time
+}
+
+// queueStatRow is one queue on the dashboard.
+type queueStatRow struct {
+	Name                                     string
+	Weight                                   int
+	Preparing, Queued, Running, Done, Failed int
+	PendingTasks, LeasedTasks                int
+	BacklogCost                              float64
+	OldestPending                            time.Duration
+	EligibleWorkers                          int
+	// Involved queues are backlogged, running or recently served; the
+	// configured share is their weight over the involved queues' total,
+	// which is what the scheduler converges to (§8.2).
+	Involved        bool
+	ConfiguredShare float64 // percent
+	ActualShare     float64 // percent of cost served in the window
+}
+
+func (u *UI) handleDashboard(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
+	var v dashboardView
+	if rc.can(auth.ActViewMetricsUI, auth.Resource{}) {
+		st, err := u.stats(r.Context())
+		if err != nil {
+			return err
+		}
+		v.Stats = st
+	} else {
+		qs, err := u.srv.Store().ListQueues(r.Context())
+		if err != nil {
+			return err
+		}
+		for _, q := range qs {
+			if auth.VisibilityOn(rc.P.Principal, q.Name) != auth.SeesNone {
+				v.Queues = append(v.Queues, q.Name)
+			}
+		}
+	}
+	u.render(w, r, rc, http.StatusOK, "dashboard", "Dashboard", v)
+	return nil
+}
+
+// handleDashboardStats returns the statistics block alone, for the
+// dashboard's periodic htmx refresh.
+func (u *UI) handleDashboardStats(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
+	if !rc.can(auth.ActViewMetricsUI, auth.Resource{}) {
+		return u.deny(r, rc, "admin, queue_admin or worker_admin required")
+	}
+	st, err := u.stats(r.Context())
+	if err != nil {
+		return err
+	}
+	u.renderFragment(w, http.StatusOK, "dashboard", "stats", st)
+	return nil
+}
+
+// stats gathers the dashboard numbers from the store's Stats snapshot, the
+// worker list, recently completed jobs and the served-cost counter.
+func (u *UI) stats(ctx context.Context) (*statsView, error) {
+	st := u.srv.Store()
+	now := u.srv.Now()
+	snap, err := st.Stats(ctx, onlineWindow)
+	if err != nil {
+		return nil, err
+	}
+	out := &statsView{Generated: now, WorkersActive: snap.Workers[api.WorkerActive],
+		WorkersPending: snap.Workers[api.WorkerPending], WorkersPaused: snap.Workers[api.WorkerPaused]}
+
+	rows := make([]queueStatRow, len(snap.Queues))
+	index := make(map[string]*queueStatRow, len(rows))
+	for i, q := range snap.Queues {
+		rows[i] = queueStatRow{Name: q.Name, Weight: q.Weight, PendingTasks: q.PendingTasks,
+			BacklogCost: q.BacklogCost, OldestPending: q.OldestPending, EligibleWorkers: q.EligibleWorkers}
+		index[q.Name] = &rows[i]
+	}
+	for _, j := range snap.Jobs {
+		row := index[j.Queue]
+		if row == nil {
+			continue
+		}
+		switch j.State {
+		case api.JobPreparing:
+			row.Preparing = j.Count
+		case api.JobQueued:
+			row.Queued = j.Count
+		case api.JobRunning:
+			row.Running = j.Count
+		case api.JobDone:
+			row.Done = j.Count
+		case api.JobFailed:
+			row.Failed = j.Count
+		}
+	}
+	for _, t := range snap.Tasks {
+		if t.State == api.TaskLeased {
+			out.RunningTasks += t.Count
+			if row := index[t.Queue]; row != nil {
+				row.LeasedTasks += t.Count
+			}
+		}
+	}
+
+	served, span := u.share.observe(now)
+	out.ShareSpan = span
+	var weights, total float64
+	for i := range rows {
+		row := &rows[i]
+		out.PendingTasks += row.PendingTasks
+		row.Involved = row.PendingTasks > 0 || row.LeasedTasks > 0 || served[row.Name] > 0
+		if row.Involved {
+			weights += float64(row.Weight)
+		}
+		total += served[row.Name]
+	}
+	for i := range rows {
+		row := &rows[i]
+		if row.Involved && weights > 0 {
+			row.ConfiguredShare = 100 * float64(row.Weight) / weights
+		}
+		if total > 0 {
+			row.ActualShare = 100 * served[row.Name] / total
+		}
+	}
+	out.Queues = rows
+
+	workers, err := st.ListWorkers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range workers {
+		if isOnline(&workers[i], now) {
+			out.WorkersOnline++
+		}
+	}
+	if out.AudioHoursPerHour, err = u.audioHoursPerHour(ctx, now); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// isOnline reports whether an active worker has been seen recently.
+func isOnline(w *store.Worker, now time.Time) bool {
+	return w.State == api.WorkerActive && w.LastSeenAt != nil && now.Sub(*w.LastSeenAt) <= onlineWindow
+}
+
+// audioHoursPerHour is the audio duration of jobs completed in the last
+// throughputWindow, per hour. Jobs are counted whole when they complete.
+func (u *UI) audioHoursPerHour(ctx context.Context, now time.Time) (float64, error) {
+	st := u.srv.Store()
+	qs, err := st.ListQueues(ctx)
+	if err != nil {
+		return 0, err
+	}
+	since := now.Add(-throughputWindow)
+	var samples int64
+	for _, q := range qs {
+		f := store.JobFilter{QueueID: q.ID, States: []api.JobState{api.JobDone}, Since: since, Limit: 1000}
+		for {
+			jobs, next, err := st.ListJobs(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			for i := range jobs {
+				j := &jobs[i]
+				if j.Canonical != nil && j.CompletedAt != nil && !j.CompletedAt.Before(since) {
+					samples += j.Canonical.Samples
+				}
+			}
+			if next == "" {
+				break
+			}
+			f.Cursor = next
+		}
+	}
+	hours := float64(samples) / media.SampleRate / 3600
+	return hours / throughputWindow.Hours(), nil
+}

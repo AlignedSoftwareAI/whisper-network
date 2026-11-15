@@ -1,0 +1,115 @@
+# Example deployment: whisper-network server + one worker, with
+# VictoriaMetrics (metrics), VictoriaLogs (logs), Vector (log shipper) and
+# vmalert (alerts).
+#
+# THIS IS AN EXAMPLE, NOT A PRODUCTION CONFIGURATION. There is no TLS, no
+# authentication in front of the observability stack, and every service has
+# default resource settings. See deploy/README.md.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Image selection: WN_IMAGE (default ghcr.io/deweysasser/whisper-network) and
+# WN_TAG (default latest). The worker uses <image>:<tag>; the server uses
+# <image>:<tag>-server.
+
+name: whisper-network
+
+x-logging-label: &shipped
+  wn.logs: "true"
+
+services:
+  server:
+    image: ${WN_IMAGE:-ghcr.io/deweysasser/whisper-network}:${WN_TAG:-latest}-server
+    command: ["server"]
+    environment:
+      WHISPER_LISTEN: ":8080"
+      WHISPER_METRICS_LISTEN: ":9090"
+      # Uncomment to choose the first-run admin password instead of printing
+      # a random one to stderr (docker compose logs server).
+      # WHISPER_ADMIN_PASSWORD: change-me
+    volumes:
+      - server-data:/data
+    ports:
+      # Loopback only. Put a TLS-terminating proxy in front for anything else.
+      - "127.0.0.1:8080:8080"
+    # /metrics (:9090) is not published: VictoriaMetrics scrapes it over the
+    # compose network.
+    labels: *shipped
+    restart: unless-stopped
+
+  worker:
+    image: ${WN_IMAGE:-ghcr.io/deweysasser/whisper-network}:${WN_TAG:-latest}
+    command: ["worker", "--server", "http://server:8080", "--description", "compose-worker"]
+    depends_on:
+      - server
+    volumes:
+      # Credentials and model cache. Without this volume every restart
+      # registers a new worker.
+      - worker-state:/var/lib/whisper-network
+    # Transcription must not compete with real work on the host.
+    cpu_shares: 128
+    mem_limit: 6g
+    labels: *shipped
+    restart: unless-stopped
+
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:v1.156.0
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=90d
+      - -promscrape.config=/etc/victoria/scrape.yml
+    volumes:
+      - ./scrape.yml:/etc/victoria/scrape.yml:ro
+      - vm-data:/storage
+    ports:
+      - "127.0.0.1:8428:8428"
+    restart: unless-stopped
+
+  victoria-logs:
+    image: victoriametrics/victoria-logs:v1.54.0
+    command:
+      - -storageDataPath=/vlogs
+      - -retentionPeriod=30d
+    volumes:
+      - vl-data:/vlogs
+    ports:
+      - "127.0.0.1:9428:9428"
+    restart: unless-stopped
+
+  # Ships the stdout JSONL of every container labelled wn.logs=true to
+  # VictoriaLogs. See vector.yaml.
+  vector:
+    image: timberio/vector:0.61.0-alpine
+    command: ["--config", "/etc/vector/vector.yaml"]
+    depends_on:
+      - victoria-logs
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+      # Read-only access to the Docker API still lets this container see all
+      # container logs and metadata. Acceptable for an example.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  vmalert:
+    image: victoriametrics/vmalert:v1.156.0
+    command:
+      - -rule=/etc/vmalert/alerts.yml
+      - -datasource.url=http://victoria-metrics:8428
+      # Evaluate and expose alert state (http://127.0.0.1:8880) without
+      # delivering notifications. Replace with -notifier.url=<alertmanager>.
+      - -notifier.blackhole
+      - -remoteWrite.url=http://victoria-metrics:8428
+      - -external.url=http://127.0.0.1:8880
+    depends_on:
+      - victoria-metrics
+    volumes:
+      - ./alerts.yml:/etc/vmalert/alerts.yml:ro
+    ports:
+      - "127.0.0.1:8880:8880"
+    restart: unless-stopped
+
+volumes:
+  server-data:
+  worker-state:
+  vm-data:
+  vl-data:

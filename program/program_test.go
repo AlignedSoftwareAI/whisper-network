@@ -19,11 +19,10 @@ func TestOptions_Run(t *testing.T) {
 
 	out := capturer.CaptureStdout(func() {
 
-		_, err := program.Parse([]string{"--version"})
-
-		assert.NoError(t, err)
-
-		// version output is done as part of parsing, so we don't need to run the program
+		// Version output and exit happen during parsing. Because exitFunc is
+		// faked and returns, parsing then continues and reports the missing
+		// subcommand; that error is expected here.
+		_, _ = program.Parse([]string{"--version"})
 	})
 
 	assert.Equal(t, exitValue, 0)

@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an addition or change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: API, flags or behaviour you have in mind. See DESIGN.md for what is a non-goal.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

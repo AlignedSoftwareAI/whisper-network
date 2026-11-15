@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/mattn/go-colorable"
@@ -16,19 +17,30 @@ var exitFunc = os.Exit
 
 // Options is the structure of program options
 type Options struct {
-	Version bool `help:"Show program version"`
+	Version kong.VersionFlag `help:"Show program version"`
 	// VersionCmd VersionCmd `name:"version" cmd:"" help:"show program version"`
 
-	Debug        bool   `group:"Info" help:"Show debugging information"`
-	OutputFormat string `group:"Info" enum:"auto,jsonl,terminal" default:"auto" help:"How to show program output (auto|terminal|jsonl)"`
-	Quiet        bool   `group:"Info" help:"Be less verbose than usual"`
+	Debug        bool   `group:"Info" help:"Show debugging information" env:"WHISPER_DEBUG"`
+	OutputFormat string `group:"Info" enum:"auto,jsonl,terminal" default:"auto" help:"How to show program output (auto|terminal|jsonl)" env:"WHISPER_OUTPUT_FORMAT"`
+	Quiet        bool   `group:"Info" help:"Be less verbose than usual" env:"WHISPER_QUIET"`
+
+	Server      ServerCmd      `cmd:"" help:"Run the coordination server"`
+	Worker      WorkerCmd      `cmd:"" help:"Run a transcription worker"`
+	Submit      SubmitCmd      `cmd:"" help:"Submit media to a queue"`
+	Status      StatusCmd      `cmd:"" help:"Show job status, or list a queue's jobs"`
+	Fetch       FetchCmd       `cmd:"" help:"Download a finished transcript"`
+	Bench       BenchCmd       `cmd:"" help:"Measure whisper-cli speed and memory on this machine"`
+	Admin       AdminCmd       `cmd:"" help:"Offline administration of a server data directory"`
+	SandboxExec SandboxExecCmd `cmd:"" name:"sandbox-exec" hidden:"" help:"Internal: confine and exec a child process"`
 }
 
 // Parse calls the CLI parsing routines
 func (program *Options) Parse(args []string) (*kong.Context, error) {
 	parser, err := kong.New(program,
 		kong.ShortUsageOnError(),
-		// kong.Description("Brief Program Summary"),
+		kong.Description("Distribute Whisper transcription across an ad-hoc fleet of workers."),
+		kong.Vars{"version": Version},
+		kong.Exit(func(code int) { exitFunc(code) }),
 	)
 
 	if err != nil {
@@ -39,12 +51,6 @@ func (program *Options) Parse(args []string) (*kong.Context, error) {
 	return parser.Parse(args)
 }
 
-// Run runs the program.  Note that you can specify any argument types as long as they're bound.
-// Useful arguments might be context.Context, log.Logger, Options
-func (program *Options) Run() error {
-	return nil
-}
-
 // AfterApply runs after the options are parsed but before anything runs
 func (program *Options) AfterApply() error {
 	program.initLogging()
@@ -52,10 +58,13 @@ func (program *Options) AfterApply() error {
 }
 
 func (program *Options) initLogging() {
-	if program.Version {
-		fmt.Println(Version)
-		exitFunc(0)
-	}
+	// Emit VictoriaLogs' default field names so /insert/jsonline needs no
+	// field mapping (DESIGN.md §10.1).
+	zerolog.TimestampFieldName = "_time"
+	zerolog.MessageFieldName = "_msg"
+	zerolog.LevelFieldName = "level"
+	zerolog.TimeFieldFormat = time.RFC3339Nano
+	zerolog.TimestampFunc = func() time.Time { return time.Now().UTC() }
 
 	switch {
 	case program.Debug:
@@ -78,9 +87,14 @@ func (program *Options) initLogging() {
 	} else {
 		log.Logger = log.Output(out)
 	}
+	hostname, _ := os.Hostname()
+	log.Logger = log.Logger.With().
+		Str("service", "whisper-network").
+		Str("version", Version).
+		Str("host", hostname).
+		Logger()
 
 	log.Logger.Debug().
-		Str("version", Version).
 		Str("program", os.Args[0]).
 		Msg("Starting")
 }

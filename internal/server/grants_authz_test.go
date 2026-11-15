@@ -1,0 +1,190 @@
+package server
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/deweysasser/whisper-network/internal/api"
+)
+
+// newClient creates an API client and returns its id and token.
+func (h *harness) newClient(grants ...api.Grant) (string, string) {
+	h.t.Helper()
+	c, err := h.srv.Ops().CreateClient(h.ctx, CLIActor(), "test", grants)
+	require.NoError(h.t, err)
+	return c.ID, c.Token
+}
+
+// wireGrants returns a principal's grants in wire form.
+func (h *harness) wireGrants(principal string) []api.Grant {
+	h.t.Helper()
+	sp, _, err := h.srv.Ops().StorePrincipal(h.ctx, principal)
+	require.NoError(h.t, err)
+	gs, err := h.srv.Ops().WireGrants(h.ctx, sp)
+	require.NoError(h.t, err)
+	return gs
+}
+
+func revokePath(principal string, g api.Grant) string {
+	return "/admin/grants?principal=" + principal + "&role=" + string(g.Role) + "&scope=" + g.Scope
+}
+
+var (
+	submitPublic = api.Grant{Role: api.RoleSubmit, Scope: "queue:public"}
+	viewPublic   = api.Grant{Role: api.RoleViewAll, Scope: "queue:public"}
+	qaPublic     = api.Grant{Role: api.RoleQueueAdmin, Scope: "queue:public"}
+	clientAdmin  = api.Grant{Role: api.RoleClientAdmin, Scope: "*"}
+)
+
+// TestExploitSubmitHolderRevokesOthersGrant: a submit-only client used to
+// DELETE another client's submit grant (204). It is now 403 and the grant
+// survives.
+func TestExploitSubmitHolderRevokesOthersGrant(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, attacker := h.newClient(submitPublic)
+	victim, _ := h.newClient(submitPublic)
+
+	resp, b := h.call("DELETE", revokePath("client:"+victim, submitPublic), attacker, nil)
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	assert.Equal(t, []api.Grant{submitPublic}, h.wireGrants("client:"+victim))
+}
+
+// TestExploitHolderGrantsHeldRole: any role holder used to POST that role
+// to any user or client. Holding a role no longer authorizes handing it on.
+func TestExploitHolderGrantsHeldRole(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.expect("POST", "/admin/users", h.admin, api.CreateUserRequest{Username: "bob"}, http.StatusCreated, nil)
+	target, _ := h.newClient()
+	cases := []struct {
+		name  string
+		held  []api.Grant
+		grant api.PrincipalGrant
+	}{
+		{"submit to a client", []api.Grant{submitPublic},
+			api.PrincipalGrant{Principal: "client:" + target, Role: api.RoleSubmit, Scope: "queue:public"}},
+		{"view_all to a user", []api.Grant{viewPublic},
+			api.PrincipalGrant{Principal: "user:bob", Role: api.RoleViewAll, Scope: "queue:public"}},
+		{"client_admin to a client", []api.Grant{clientAdmin},
+			api.PrincipalGrant{Principal: "client:" + target, Role: api.RoleClientAdmin, Scope: "*"}},
+		{"held grant by a client_admin", []api.Grant{clientAdmin, submitPublic},
+			api.PrincipalGrant{Principal: "client:" + target, Role: api.RoleSubmit, Scope: "queue:public"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, tok := h.newClient(c.held...)
+			resp, b := h.call("POST", "/admin/grants", tok, c.grant)
+			h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+		})
+	}
+	assert.Empty(t, h.wireGrants("client:"+target))
+	assert.Empty(t, h.wireGrants("user:bob"))
+}
+
+// TestExploitQueueAdminMintsQueueAdmin: a queue_admin used to grant
+// queue_admin to others. It may manage submit/view_all/delete_all on its
+// queue, but neither create nor remove queue admins.
+func TestExploitQueueAdminMintsQueueAdmin(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, qa := h.newClient(qaPublic)
+	other, _ := h.newClient()
+	peer, _ := h.newClient(qaPublic)
+
+	resp, b := h.call("POST", "/admin/grants", qa, api.PrincipalGrant{Principal: "client:" + other,
+		Role: api.RoleQueueAdmin, Scope: "queue:public"})
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	resp, b = h.call("DELETE", revokePath("client:"+peer, qaPublic), qa, nil)
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	assert.Equal(t, []api.Grant{qaPublic}, h.wireGrants("client:"+peer))
+	assert.Empty(t, h.wireGrants("client:"+other))
+
+	// What a queue admin may do on its own queue still works, both ways.
+	h.expect("POST", "/admin/grants", qa, api.PrincipalGrant{Principal: "client:" + other,
+		Role: api.RoleSubmit, Scope: "queue:public"}, http.StatusNoContent, nil)
+	h.expect("DELETE", revokePath("client:"+other, submitPublic), qa, nil, http.StatusNoContent, nil)
+	h.expect("POST", "/admin/queues", h.admin, api.Queue{Name: "private"}, http.StatusCreated, nil)
+	resp, b = h.call("POST", "/admin/grants", qa, api.PrincipalGrant{Principal: "client:" + other,
+		Role: api.RoleSubmit, Scope: "queue:private"})
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+}
+
+// TestRevokeClientNeedsCreatorAuthority: client_admin may revoke only
+// clients it could have created; admin may revoke any.
+func TestRevokeClientNeedsCreatorAuthority(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, ca := h.newClient(clientAdmin, submitPublic)
+	small, _ := h.newClient(submitPublic)
+	big, _ := h.newClient(submitPublic, viewPublic)
+	adminClient, _ := h.newClient(api.Grant{Role: api.RoleAdmin, Scope: "*"})
+
+	for _, id := range []string{big, adminClient} {
+		resp, b := h.call("DELETE", "/client/"+id, ca, nil)
+		h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+		c, err := h.st.ClientByID(h.ctx, id)
+		require.NoError(t, err)
+		assert.Nil(t, c.RevokedAt)
+	}
+	h.expect("DELETE", "/client/"+small, ca, nil, http.StatusNoContent, nil)
+	h.expect("DELETE", "/client/"+big, h.admin, nil, http.StatusNoContent, nil)
+	_, noRights := h.newClient(submitPublic)
+	resp, b := h.call("DELETE", "/client/"+small, noRights, nil)
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	resp, b = h.call("DELETE", "/client/cli_nonexistent", h.admin, nil)
+	h.expectProblem(resp, b, http.StatusNotFound, api.ProblemNotFound)
+}
+
+// TestCreateClientKeepsRedelegation: POST /client still lets a client_admin
+// hand on grants it holds (and only those, or what it administers).
+func TestCreateClientKeepsRedelegation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, ca := h.newClient(clientAdmin, submitPublic)
+	h.expect("POST", "/client", ca, api.CreateClientRequest{Name: "x", Grants: []api.Grant{submitPublic, clientAdmin}},
+		http.StatusCreated, nil)
+	resp, b := h.call("POST", "/client", ca, api.CreateClientRequest{Name: "y", Grants: []api.Grant{viewPublic}})
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	_, caqa := h.newClient(clientAdmin, qaPublic)
+	h.expect("POST", "/client", caqa, api.CreateClientRequest{Name: "z", Grants: []api.Grant{viewPublic}},
+		http.StatusCreated, nil)
+}
+
+// TestListGrantsDoesNotLeakExistence: GET /admin/grants authorizes before
+// resolving the principal, so a non-admin gets 403 for a missing principal
+// exactly as for an existing one, while still seeing its own grants.
+func TestListGrantsDoesNotLeakExistence(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	self, tok := h.newClient(submitPublic)
+	other, _ := h.newClient()
+	for _, p := range []string{"client:" + other, "client:cli_missing", "user:admin", "user:nobody", "bogus"} {
+		resp, b := h.call("GET", "/admin/grants?principal="+p, tok, nil)
+		h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+	}
+	var gs []api.PrincipalGrant
+	h.expect("GET", "/admin/grants?principal=client:"+self, tok, nil, http.StatusOK, &gs)
+	assert.Equal(t, []api.PrincipalGrant{{Principal: "client:" + self, Role: api.RoleSubmit, Scope: "queue:public"}}, gs)
+	resp, b := h.call("GET", "/admin/grants?principal=user:nobody", h.admin, nil)
+	h.expectProblem(resp, b, http.StatusNotFound, api.ProblemNotFound)
+}
+
+// TestWorkerAdminGrantsScopedWorkerAdmin: the only worker-scoped grant is
+// worker_admin on worker:<id>; worker_admin "*" administers it.
+func TestWorkerAdminGrantsScopedWorkerAdmin(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, wa := h.newClient(api.Grant{Role: api.RoleWorkerAdmin, Scope: "*"})
+	h.expect("POST", "/admin/users", h.admin, api.CreateUserRequest{Username: "op"}, http.StatusCreated, nil)
+	scoped := api.PrincipalGrant{Principal: "user:op", Role: api.RoleWorkerAdmin, Scope: "worker:w1"}
+	h.expect("POST", "/admin/grants", wa, scoped, http.StatusNoContent, nil)
+	h.expect("DELETE", revokePath("user:op", api.Grant{Role: api.RoleWorkerAdmin, Scope: "worker:w1"}), wa, nil,
+		http.StatusNoContent, nil)
+	resp, b := h.call("POST", "/admin/grants", wa, api.PrincipalGrant{Principal: "user:op",
+		Role: api.RoleWorkerAdmin, Scope: "*"})
+	h.expectProblem(resp, b, http.StatusForbidden, api.ProblemForbidden)
+}

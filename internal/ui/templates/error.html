@@ -1,0 +1,9 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>{{.Data.Status}} · {{.Title}}</h1>
+  <p>{{.Data.Message}}</p>
+  <p><a href="/ui/">Back to the dashboard</a></p>
+</section>
+{{end}}
+
+{{define "flash"}}<p class="error">{{.}}</p>{{end}}

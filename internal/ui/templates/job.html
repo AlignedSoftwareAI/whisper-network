@@ -1,0 +1,60 @@
+{{define "content"}}
+{{$j := .Data.Job}}
+<h1>Job <code>{{$j.ID}}</code></h1>
+<section class="card">
+  <dl class="facts">
+    <dt>Queue</dt><dd><a href="/ui/queues/{{$j.Queue}}">{{$j.Queue}}</a></dd>
+    <dt>State</dt><dd><span class="badge job-{{$j.State}}">{{$j.State}}</span></dd>
+    {{with $j.Error}}<dt>Error</dt><dd class="error">{{.}}</dd>{{end}}
+    <dt>Label</dt><dd>{{$j.Label}}</dd>
+    {{with $j.Source}}<dt>Source</dt><dd><span class="wrap">{{.}}</span></dd>{{end}}
+    <dt>Owner</dt><dd><code>{{.Data.Owner}}</code></dd>
+    <dt>Weight</dt><dd>{{$j.Weight}}</dd>
+    <dt>Model</dt><dd>{{$j.Model}} · {{$j.Language}}</dd>
+    {{with $j.Prompt}}<dt>Prompt</dt><dd class="wrap">{{.}}</dd>{{end}}
+    <dt>Media</dt><dd>{{bytes $j.Media.OriginalBytes}} {{$j.Media.OriginalType}}{{if $j.Media.DurationS}} · {{secs $j.Media.DurationS}} of audio{{end}}
+      {{if $j.Media.OriginalPurged}} · original purged{{end}}{{if $j.Media.AudioPurged}} · audio purged{{end}}</dd>
+    <dt>Tasks</dt><dd>{{$j.Tasks.Done}} done · {{$j.Tasks.Leased}} running · {{$j.Tasks.Pending}} pending · {{$j.Tasks.Failed}} failed · {{$j.Tasks.Total}} total</dd>
+    <dt>Created</dt><dd>{{when $j.CreatedAt}}</dd>
+    <dt>Started</dt><dd>{{whenp $j.StartedAt}}</dd>
+    <dt>Completed</dt><dd>{{whenp $j.CompletedAt}}</dd>
+    <dt>Timing</dt><dd>waited {{secsp $j.WaitS}} · elapsed {{secsp $j.ElapsedS}} · compute {{secs $j.ComputeS}}</dd>
+    <dt>Downloads</dt><dd>{{$j.Downloads.Count}}{{with $j.Downloads.Last}} · last {{when .}}{{end}}</dd>
+  </dl>
+  <div class="actions">
+    {{if .Data.CanDownload}}
+    <a class="button" href="/job/{{$j.ID}}/transcript" download>Download transcript</a>
+    <a class="button secondary" href="/job/{{$j.ID}}/result" download>Download JSON</a>
+    {{end}}
+    {{if .Data.CanDelete}}
+    <form method="post" action="/ui/jobs/{{$j.ID}}/delete" class="inline"
+          hx-post="/ui/jobs/{{$j.ID}}/delete" hx-confirm="Delete this job, its media and its transcript? This cannot be undone.">
+      {{template "csrf" .CSRF}}
+      <button type="submit" class="danger">Delete job</button>
+    </form>
+    {{end}}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Finished tasks</h2>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th class="n">#</th><th>Kind</th><th>Audio</th><th>Worker</th><th>Engine</th><th class="n">Compute</th></tr></thead>
+    <tbody>
+    {{range .Data.Tasks}}
+    <tr>
+      <td class="n">{{.Seq}}</td><td>{{.Kind}}</td>
+      <td>{{if eq (print .Kind) "transcribe"}}{{secs .StartS}} – {{secs .EndS}}{{else}}—{{end}}</td>
+      <td><code title="{{.WorkerID}}">{{short .WorkerID}}</code></td>
+      <td>{{.EngineVersion}}</td>
+      <td class="n">{{secs .ComputeS}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="6" class="muted">No task has finished yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+{{end}}

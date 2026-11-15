@@ -1,0 +1,58 @@
+{{define "content"}}
+<h1>Users</h1>
+{{with .Data.Created}}
+<section class="card secret" aria-live="polite">
+  <h2>Created user {{.Username}}</h2>
+  {{if .Password}}
+  <p>Their generated password is shown <strong>only this once</strong>. They must change it at first sign-in.</p>
+  <p><code class="token">{{.Password}}</code></p>
+  {{else}}<p>The user can sign in with the password you chose.</p>{{end}}
+</section>
+{{end}}
+
+<section class="card">
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Users}}
+    <tr>
+      <td>{{.Username}}</td>
+      <td>{{if .Disabled}}<span class="badge state-rejected">disabled</span>{{else if .MustChangePassword}}<span class="badge state-pending">must change password</span>{{else}}active{{end}}</td>
+      <td>
+        {{range .Grants}}<div class="chip">{{.Role}} {{.Scope}}{{if .CanRevoke}}{{template "revoke" (dict "G" . "CSRF" $.CSRF "Back" "/ui/users")}}{{end}}</div>{{else}}<span class="muted">none</span>{{end}}
+        {{if not .Disabled}}
+        <form method="post" action="/ui/grants" class="row compact">
+          {{template "csrf" $.CSRF}}
+          <input type="hidden" name="principal" value="user:{{.Username}}">
+          <input type="hidden" name="back" value="/ui/users">
+          <select name="role" aria-label="Role">{{range $.Data.UserRoles}}<option>{{.}}</option>{{end}}</select>
+          <input name="scope" aria-label="Scope" placeholder="* or queue:name or worker:id" required>
+          <button type="submit">Grant</button>
+        </form>
+        {{end}}
+      </td>
+      <td>{{when .CreatedAt}}</td>
+      <td>{{if and (not .Disabled) (ne .Username $.Data.Self)}}
+        <form method="post" action="/ui/users/{{.Username}}/disable" class="inline" hx-post="/ui/users/{{.Username}}/disable" hx-confirm="Disable {{.Username}}? Their sessions end immediately.">
+          {{template "csrf" $.CSRF}}
+          <button type="submit" class="danger">Disable</button>
+        </form>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Create a user</h2>
+  <form method="post" action="/ui/users" class="stack">
+    {{template "csrf" .CSRF}}
+    <label>Username <input name="username" pattern="[a-z0-9][a-z0-9\-]{0,62}" autocapitalize="none" required></label>
+    <label>Password <input name="password" type="password" autocomplete="new-password" minlength="12" placeholder="leave empty to generate one"></label>
+    {{template "grant-matrix" .Data.Grants}}
+    <button type="submit">Create user</button>
+  </form>
+</section>
+{{end}}

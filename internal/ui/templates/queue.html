@@ -1,0 +1,94 @@
+{{define "content"}}
+{{$q := .Data.Queue}}
+<h1>Queue {{$q.Name}}</h1>
+<section class="card">
+  {{if or .Data.CanEditDesc .Data.CanEditWeight}}
+  <form method="post" action="/ui/queues/{{$q.Name}}" class="stack">
+    {{template "csrf" .CSRF}}
+    {{if .Data.CanEditDesc}}<label>Description <input name="description" value="{{$q.Description}}"></label>{{end}}
+    {{if .Data.CanEditMax}}<label>Max upload <input name="max_upload" value="{{if $q.MaxUploadBytes}}{{$q.MaxUploadBytes}}{{end}}" placeholder="default (e.g. 500MiB)"></label>{{end}}
+    {{if .Data.CanEditWeight}}<label>Weight <input name="weight" type="number" min="1" max="10000" value="{{$q.Weight}}" required></label>
+    {{else}}<p>Weight: <strong>{{$q.Weight}}</strong> <span class="muted">(only an admin can change it)</span></p>{{end}}
+    <button type="submit">Save</button>
+  </form>
+  {{else}}
+  <dl class="facts">
+    <dt>Description</dt><dd>{{$q.Description}}</dd>
+    <dt>Weight</dt><dd>{{$q.Weight}}</dd>
+    <dt>Upload cap</dt><dd>{{if $q.MaxUploadBytes}}{{bytes $q.MaxUploadBytes}}{{else}}default{{end}}</dd>
+  </dl>
+  {{end}}
+</section>
+
+<section class="card" id="jobs">
+  <h2>Jobs</h2>
+  {{if .Data.SeesJobs}}
+  <form method="get" action="/ui/queues/{{$q.Name}}" class="row">
+    <label>State
+      <select name="state">
+        <option value="">any</option>
+        {{range .Data.States}}<option value="{{.}}"{{if eq (print .) $.Data.State}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </label>
+    <button type="submit">Filter</button>
+  </form>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>Job</th><th>Label</th><th>State</th><th>Weight</th><th>Model</th><th class="n">Audio</th><th class="n">Tasks</th><th>Created</th></tr></thead>
+    <tbody>
+    {{range .Data.Jobs}}
+    <tr>
+      <td><a href="/ui/jobs/{{.ID}}" title="{{.ID}}"><code>{{short .ID}}</code></a></td>
+      <td>{{.Label}}</td>
+      <td><span class="badge job-{{.State}}">{{.State}}</span></td>
+      <td>{{.Weight}}</td>
+      <td>{{.Model}}</td>
+      <td class="n">{{if .Media.DurationS}}{{secs .Media.DurationS}}{{else}}—{{end}}</td>
+      <td class="n">{{.Tasks.Done}}/{{.Tasks.Total}}</td>
+      <td>{{when .CreatedAt}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="8" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{with .Data.NextPage}}<p><a href="{{.}}">Next page →</a></p>{{end}}
+  {{if .Data.OwnOnly}}<p class="muted small">Showing only your own jobs.</p>{{end}}
+  {{else}}
+  <p class="muted">You have no access to this queue's jobs.</p>
+  {{end}}
+</section>
+
+{{if .Data.CanManageGrants}}
+<section class="card">
+  <h2>Access</h2>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>Principal</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Grants}}
+    <tr>
+      <td><code>{{.Principal}}</code></td>
+      <td>{{.Role}}</td>
+      <td>{{if .CanRevoke}}{{template "revoke" (dict "G" . "CSRF" $.CSRF "Back" $.Data.Back)}}{{end}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="3" class="muted">No grants on this queue.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{if .Data.GrantRoles}}
+  <form method="post" action="/ui/grants" class="row">
+    {{template "csrf" .CSRF}}
+    <input type="hidden" name="scope" value="queue:{{$q.Name}}">
+    <input type="hidden" name="back" value="{{.Data.Back}}">
+    <label>Principal <input name="principal" placeholder="user:alice or client:cli_…" required></label>
+    <label>Role <select name="role">{{range .Data.GrantRoles}}<option>{{.}}</option>{{end}}</select></label>
+    <button type="submit">Grant</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+{{end}}

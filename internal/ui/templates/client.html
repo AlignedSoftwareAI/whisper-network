@@ -1,0 +1,15 @@
+{{define "content"}}
+{{with .Data}}
+<p><a href="/ui/clients">← API clients</a></p>
+<h1>Client {{.Client.Name}}</h1>
+<p class="muted small">Client ID <code>{{.Client.ID}}</code> · created {{when .Client.CreatedAt}} · last used {{ago .Client.LastUsedAt}}</p>
+{{if .Saved}}<p class="saved" role="status">Permissions saved: {{.Added}} added, {{.Removed}} removed. The token is unchanged; the new permissions apply from its next request.</p>{{end}}
+<section class="card">
+  <form method="post" action="/ui/clients/{{.Client.ID}}" class="stack">
+    {{template "csrf" $.CSRF}}
+    {{template "grant-matrix" .Grants}}
+    <button type="submit">Save permissions</button>
+  </form>
+</section>
+{{end}}
+{{end}}

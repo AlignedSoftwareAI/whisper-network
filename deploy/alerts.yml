@@ -1,0 +1,68 @@
+# vmalert / Prometheus-compatible alert rules for whisper-network.
+# Metric names come from the server's /metrics endpoint (internal/obs).
+groups:
+  - name: whisper-network
+    interval: 1m
+    rules:
+      - alert: WhisperServerDown
+        expr: up{job="whisper-network"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "whisper-network server is not being scraped"
+
+      - alert: WhisperQueueStalled
+        expr: |
+          whisper_queue_oldest_pending_seconds > 6 * 3600
+            and on (queue) whisper_queue_backlog_cost > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} has had work waiting for over 6h"
+          description: "Oldest pending task: {{ $value | humanizeDuration }}. Check worker approval, queue grants and worker health."
+
+      - alert: WhisperLeaseChurn
+        expr: sum by (kind) (rate(whisper_leases_ended_total{outcome="expired"}[15m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Leases of kind {{ $labels.kind }} are expiring"
+          description: "Sick workers, or a heartbeat interval too short for the network."
+
+      # The worker-state label is not exported per worker; this covers pending,
+      # active and paused workers. Rejected workers are not exported at all.
+      - alert: WhisperWorkerVanished
+        expr: |
+          (time() - whisper_worker_last_seen_timestamp_seconds > 600)
+            and (whisper_worker_last_seen_timestamp_seconds > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.worker }} has not been seen for over 10 minutes"
+
+      # free / (free + stored media) is a proxy for "fraction of the data
+      # volume still available to whisper-network", not filesystem usage.
+      - alert: WhisperDiskLow
+        expr: |
+          whisper_data_free_bytes
+            / (whisper_data_free_bytes + sum(whisper_storage_bytes)) < 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Less than 10% of the server's data space is free"
+
+      - alert: WhisperNoEligibleWorker
+        expr: |
+          (whisper_queue_eligible_workers == 0)
+            and on (queue) (sum by (queue) (whisper_tasks{state="pending"}) > 0)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} has pending tasks and no eligible worker"
+          description: "No worker is approved for this queue, or none has been seen recently."

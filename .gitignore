@@ -13,9 +13,11 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
-golang-program
+whisper-network
 .idea
 CHANGELOG.md
 dist
 bin
 .Dockerfile.tmp
+coverage.out
+.cache

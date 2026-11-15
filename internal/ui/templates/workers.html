@@ -1,0 +1,81 @@
+{{define "content"}}
+<h1>Workers</h1>
+{{range .Data.Workers}}{{template "worker" .}}{{else}}<p class="muted">No workers are registered, or none you may manage.</p>{{end}}
+{{end}}
+
+{{define "worker"}}
+<article class="card worker state-{{.State}}" id="w-{{.ID}}">
+  <header class="row">
+    <h2>{{.Facts.Hostname}}</h2>
+    <span class="badge state-{{.State}}">{{.State}}</span>
+    {{if .Online}}<span class="badge online">online</span>{{end}}
+  </header>
+  {{with .Facts.Description}}<p>{{.}}</p>{{end}}
+  <dl class="facts">
+    <dt>ID</dt><dd><code>{{.ID}}</code></dd>
+    <dt>Sandbox</dt><dd><span class="badge sandbox-{{.Facts.SandboxLevel}}">{{.Facts.SandboxLevel}}</span></dd>
+    <dt>CPU</dt><dd>{{.Facts.CPUModel}} · {{.Facts.Cores}} cores · {{bytes .Facts.MemBytes}}</dd>
+    <dt>Platform</dt><dd>{{.Facts.OS}}/{{.Facts.Arch}}{{with .Facts.Version}} · whisper-network {{.}}{{end}}</dd>
+    <dt>Engine</dt><dd>{{.Facts.EngineVersion}}{{with .Facts.FFmpegVersion}} · ffmpeg {{.}}{{end}}</dd>
+    <dt>Models</dt><dd>{{join .Facts.Models ", "}}</dd>
+    <dt>Slots</dt><dd>{{.Facts.Slots}}{{with .Gauges}} · {{.SlotsBusy}} busy (current leases) · load {{num .Load1}}{{end}}</dd>
+    <dt>Registered</dt><dd>{{when .RegisteredAt}}</dd>
+    <dt>Last seen</dt><dd>{{ago .LastSeenAt}}</dd>
+    {{with .DecidedBy}}<dt>Decided by</dt><dd>{{.}}</dd>{{end}}
+    <dt>Queues</dt>
+    <dd>
+      {{range .Queues}}
+      <span class="chip">{{.Name}}{{if .CanRevoke}}
+        <form method="post" action="/ui/grants/revoke" class="inline">
+          {{template "csrf" $.CSRF}}
+          <input type="hidden" name="principal" value="worker:{{$.ID}}">
+          <input type="hidden" name="role" value="process">
+          <input type="hidden" name="scope" value="queue:{{.Name}}">
+          <input type="hidden" name="back" value="/ui/workers">
+          <button type="submit" class="link" title="Stop this worker processing {{.Name}}" aria-label="Revoke {{.Name}}">×</button>
+        </form>{{end}}</span>
+      {{else}}<span class="muted">none</span>{{end}}
+    </dd>
+  </dl>
+
+  {{if .CanApprove}}
+  <form method="post" action="/ui/workers/{{.ID}}/approve" class="approve"
+        hx-post="/ui/workers/{{.ID}}/approve" hx-target="#w-{{.ID}}" hx-swap="outerHTML">
+    {{template "csrf" .CSRF}}
+    <fieldset>
+      <legend>Approve for queues (sandbox: {{.Facts.SandboxLevel}})</legend>
+      {{range .ApproveQueues}}<label class="check"><input type="checkbox" name="queue" value="{{.}}"> {{.}}</label>{{else}}<span class="muted">You are not queue_admin on any queue; the worker will be active but idle.</span>{{end}}
+    </fieldset>
+    <button type="submit">Approve</button>
+  </form>
+  {{end}}
+
+  {{if .AddQueues}}
+  <form method="post" action="/ui/grants" class="row">
+    {{template "csrf" .CSRF}}
+    <input type="hidden" name="principal" value="worker:{{.ID}}">
+    <input type="hidden" name="role" value="process">
+    <input type="hidden" name="back" value="/ui/workers">
+    <label>Add queue
+      <select name="scope">{{range .AddQueues}}<option value="queue:{{.}}">{{.}}</option>{{end}}</select>
+    </label>
+    <button type="submit">Grant</button>
+  </form>
+  {{end}}
+
+  <div class="actions">
+    {{if .CanPause}}{{template "worker-action" (dict "W" . "Verb" "pause" "Label" "Pause")}}{{end}}
+    {{if .CanResume}}{{template "worker-action" (dict "W" . "Verb" "resume" "Label" "Resume")}}{{end}}
+    {{if .CanReject}}{{template "worker-action" (dict "W" . "Verb" "reject" "Label" "Reject")}}{{end}}
+  </div>
+</article>
+{{end}}
+
+{{define "worker-action"}}
+<form method="post" action="/ui/workers/{{.W.ID}}/{{.Verb}}" class="inline"
+      hx-post="/ui/workers/{{.W.ID}}/{{.Verb}}" hx-target="#w-{{.W.ID}}" hx-swap="outerHTML"
+      {{if eq .Verb "reject"}}hx-confirm="Reject this worker? Its token is revoked and its leases are cancelled. This cannot be undone."{{end}}>
+  {{template "csrf" .W.CSRF}}
+  <button type="submit"{{if eq .Verb "reject"}} class="danger"{{end}}>{{.Label}}</button>
+</form>
+{{end}}

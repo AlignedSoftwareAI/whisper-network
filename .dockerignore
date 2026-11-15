@@ -1,0 +1,7 @@
+.git
+.idea
+dist
+bin
+whisper-network
+*.test
+deploy/data

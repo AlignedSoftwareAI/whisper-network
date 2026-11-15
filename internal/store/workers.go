@@ -1,0 +1,298 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/deweysasser/whisper-network/internal/api"
+)
+
+// Worker is a registered worker machine.
+type Worker struct {
+	ID           string
+	State        api.WorkerState
+	Facts        api.WorkerFacts
+	RegisteredAt time.Time
+	DecidedBy    string
+	DecidedAt    *time.Time
+	LastSeenAt   *time.Time
+	// Gauges is the JSON of the latest heartbeat gauges, nil if none.
+	Gauges json.RawMessage
+}
+
+// Principal returns the worker's grant principal.
+func (w *Worker) Principal() string { return WorkerPrincipal(w.ID) }
+
+// RegisterWorker creates a pending worker with a server-assigned id.
+func (s *Store) RegisterWorker(ctx context.Context, tokenHash string, facts api.WorkerFacts) (*Worker, error) {
+	return inTx1(ctx, s, func(tx *Tx) (*Worker, error) { return tx.RegisterWorker(ctx, tokenHash, facts) })
+}
+
+// RegisterWorker is Store.RegisterWorker inside the transaction.
+func (t *Tx) RegisterWorker(ctx context.Context, tokenHash string, facts api.WorkerFacts) (*Worker, error) {
+	return t.registerWorker(ctx, tokenHash, facts, "")
+}
+
+// registerWorker inserts a pending worker registered from source (an
+// auth.IPKey, or "" if unknown).
+func (t *Tx) registerWorker(ctx context.Context, tokenHash string, facts api.WorkerFacts, source string) (*Worker, error) {
+	if tokenHash == "" {
+		return nil, fmt.Errorf("%w: empty token hash", ErrInvalid)
+	}
+	kinds, models, err := factsJSON(facts)
+	if err != nil {
+		return nil, err
+	}
+	now := fromMS(toMS(t.s.now()))
+	w := &Worker{ID: t.s.cfg.NewID(IDWorker), State: api.WorkerPending, Facts: facts, RegisteredAt: now}
+	_, err = t.tx.ExecContext(ctx, `INSERT INTO workers (id, token_hash, state, hostname, description, cpu_model,
+		cores, mem_bytes, os, arch, engine_version, ffmpeg_version, sandbox_level, kinds, slots, models, version,
+		registered_at, registered_from) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		w.ID, tokenHash, string(w.State), facts.Hostname, facts.Description, facts.CPUModel, facts.Cores,
+		facts.MemBytes, facts.OS, facts.Arch, facts.EngineVersion, facts.FFmpegVersion, string(facts.SandboxLevel),
+		kinds, facts.Slots, models, facts.Version, toMS(now), source)
+	if isUnique(err) {
+		return nil, fmt.Errorf("register worker: %w", ErrConflict)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("register worker: %w", err)
+	}
+	return w, nil
+}
+
+func factsJSON(f api.WorkerFacts) (kinds, models string, err error) {
+	k, err := json.Marshal(nonNil(f.Kinds))
+	if err != nil {
+		return "", "", fmt.Errorf("worker kinds: %w", err)
+	}
+	m, err := json.Marshal(nonNil(f.Models))
+	if err != nil {
+		return "", "", fmt.Errorf("worker models: %w", err)
+	}
+	return string(k), string(m), nil
+}
+
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
+const workerCols = `id, state, hostname, description, cpu_model, cores, mem_bytes, os, arch, engine_version,
+	ffmpeg_version, sandbox_level, kinds, slots, models, version, registered_at, decided_by, decided_at,
+	last_seen_at, gauges`
+
+func scanWorker(row interface{ Scan(...any) error }) (*Worker, error) {
+	var w Worker
+	var f = &w.Facts
+	var kinds, models string
+	var registered int64
+	var decidedBy, gauges sql.NullString
+	var decidedAt, lastSeen sql.NullInt64
+	if err := row.Scan(&w.ID, &w.State, &f.Hostname, &f.Description, &f.CPUModel, &f.Cores, &f.MemBytes, &f.OS,
+		&f.Arch, &f.EngineVersion, &f.FFmpegVersion, &f.SandboxLevel, &kinds, &f.Slots, &models, &f.Version,
+		&registered, &decidedBy, &decidedAt, &lastSeen, &gauges); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(kinds), &f.Kinds); err != nil {
+		return nil, fmt.Errorf("worker %s kinds: %w", w.ID, err)
+	}
+	if err := json.Unmarshal([]byte(models), &f.Models); err != nil {
+		return nil, fmt.Errorf("worker %s models: %w", w.ID, err)
+	}
+	w.RegisteredAt = fromMS(registered)
+	w.DecidedBy = decidedBy.String
+	w.DecidedAt = optTime(decidedAt)
+	w.LastSeenAt = optTime(lastSeen)
+	if gauges.Valid {
+		w.Gauges = json.RawMessage(gauges.String)
+	}
+	return &w, nil
+}
+
+// WorkerByID returns a worker in any state.
+func (s *Store) WorkerByID(ctx context.Context, id string) (*Worker, error) {
+	w, err := scanWorker(s.r.QueryRowContext(ctx, `SELECT `+workerCols+` FROM workers WHERE id = ?`, id))
+	if err != nil {
+		return nil, notFound(err, "worker "+id)
+	}
+	return w, nil
+}
+
+// WorkerByTokenHash returns the worker owning a token. Rejected workers'
+// tokens are revoked, so they are reported as ErrNotFound.
+func (s *Store) WorkerByTokenHash(ctx context.Context, hash string) (*Worker, error) {
+	w, err := scanWorker(s.r.QueryRowContext(ctx,
+		`SELECT `+workerCols+` FROM workers WHERE token_hash = ? AND state != 'rejected'`, hash))
+	if err != nil {
+		return nil, notFound(err, "worker by token")
+	}
+	return w, nil
+}
+
+// ListWorkers returns all workers, pending first, then by registration time.
+func (s *Store) ListWorkers(ctx context.Context) ([]Worker, error) {
+	rows, err := s.r.QueryContext(ctx,
+		`SELECT `+workerCols+` FROM workers ORDER BY state != 'pending', registered_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("list workers: %w", err)
+	}
+	defer rows.Close()
+	var out []Worker
+	for rows.Next() {
+		w, err := scanWorker(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list workers: %w", err)
+		}
+		out = append(out, *w)
+	}
+	return out, rows.Err()
+}
+
+// UpdateWorkerFacts replaces a worker's reported facts.
+func (s *Store) UpdateWorkerFacts(ctx context.Context, id string, facts api.WorkerFacts) error {
+	return s.InTx(ctx, func(tx *Tx) error { return tx.UpdateWorkerFacts(ctx, id, facts) })
+}
+
+// UpdateWorkerFacts is Store.UpdateWorkerFacts inside the transaction.
+func (t *Tx) UpdateWorkerFacts(ctx context.Context, id string, facts api.WorkerFacts) error {
+	kinds, models, err := factsJSON(facts)
+	if err != nil {
+		return err
+	}
+	res, err := t.tx.ExecContext(ctx, `UPDATE workers SET hostname=?, description=?, cpu_model=?, cores=?,
+		mem_bytes=?, os=?, arch=?, engine_version=?, ffmpeg_version=?, sandbox_level=?, kinds=?, slots=?,
+		models=?, version=? WHERE id = ?`,
+		facts.Hostname, facts.Description, facts.CPUModel, facts.Cores, facts.MemBytes, facts.OS, facts.Arch,
+		facts.EngineVersion, facts.FFmpegVersion, string(facts.SandboxLevel), kinds, facts.Slots, models,
+		facts.Version, id)
+	return mustAffect(res, err, "update worker facts")
+}
+
+// workerTransitions is the worker state machine (DESIGN.md §4.2).
+var workerTransitions = map[api.WorkerState][]api.WorkerState{
+	api.WorkerPending: {api.WorkerActive, api.WorkerRejected},
+	api.WorkerActive:  {api.WorkerPaused, api.WorkerRejected},
+	api.WorkerPaused:  {api.WorkerActive, api.WorkerRejected},
+}
+
+func canTransition(from, to api.WorkerState) bool {
+	if from == to {
+		return true
+	}
+	for _, s := range workerTransitions[from] {
+		if s == to {
+			return true
+		}
+	}
+	return false
+}
+
+// SetWorkerState moves a worker to state, recording who decided. Illegal
+// transitions (e.g. out of rejected) return ErrConflict; setting the current
+// state again is a no-op. Rejecting a worker cancels its live leases, whose
+// tasks return to pending without consuming an attempt; their ids are
+// returned.
+func (s *Store) SetWorkerState(ctx context.Context, id string, state api.WorkerState, decidedBy string) (cancelled []string, err error) {
+	return inTx1(ctx, s, func(tx *Tx) ([]string, error) { return tx.SetWorkerState(ctx, id, state, decidedBy) })
+}
+
+// SetWorkerState is Store.SetWorkerState inside the transaction.
+func (t *Tx) SetWorkerState(ctx context.Context, id string, state api.WorkerState, decidedBy string) (cancelled []string, err error) {
+	var cur api.WorkerState
+	if err := t.tx.QueryRowContext(ctx, `SELECT state FROM workers WHERE id = ?`, id).Scan(&cur); err != nil {
+		return nil, notFound(err, "worker "+id)
+	}
+	if !canTransition(cur, state) {
+		return nil, fmt.Errorf("worker %s: %s -> %s: %w", id, cur, state, ErrConflict)
+	}
+	if cur == state {
+		return nil, nil
+	}
+	now := t.s.now()
+	if _, err := t.tx.ExecContext(ctx, `UPDATE workers SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?`,
+		string(state), decidedBy, toMS(now), id); err != nil {
+		return nil, fmt.Errorf("set worker state: %w", err)
+	}
+	if state != api.WorkerRejected {
+		return nil, nil
+	}
+	ls, err := liveLeases(ctx, t.tx, `l.worker_id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range ls {
+		if _, err := t.s.endLease(ctx, t.tx, l, api.OutcomeCancelled, false, true, "worker rejected", now); err != nil {
+			return nil, err
+		}
+		cancelled = append(cancelled, l.ID)
+	}
+	return cancelled, nil
+}
+
+// TouchWorker records that a worker was just seen. Non-nil gauges replace the
+// stored heartbeat gauges.
+func (s *Store) TouchWorker(ctx context.Context, id string, gauges *api.Gauges) error {
+	var g sql.NullString
+	if gauges != nil {
+		b, err := json.Marshal(gauges)
+		if err != nil {
+			return fmt.Errorf("touch worker: %w", err)
+		}
+		g = sql.NullString{String: string(b), Valid: true}
+	}
+	return s.write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE workers SET last_seen_at = ?, gauges = COALESCE(?, gauges) WHERE id = ?`,
+			toMS(s.now()), g, id)
+		return mustAffect(res, err, "touch worker")
+	})
+}
+
+// DeletePendingWorkersUnseen deletes workers still pending that registered
+// before cutoff, with every grant they hold or that is scoped to them, and
+// returns how many. Expiry counts from
+// registration, not last contact: a pending worker cannot hold its slot
+// under the pending cap just by polling.
+func (s *Store) DeletePendingWorkersUnseen(ctx context.Context, cutoff time.Time) (int64, error) {
+	ids, err := inTx1(ctx, s, func(tx *Tx) ([]string, error) { return tx.DeletePendingWorkersUnseen(ctx, cutoff) })
+	return int64(len(ids)), err
+}
+
+// DeletePendingWorkersUnseen is Store.DeletePendingWorkersUnseen inside the
+// transaction. It returns the deleted workers' ids.
+func (t *Tx) DeletePendingWorkersUnseen(ctx context.Context, cutoff time.Time) ([]string, error) {
+	const where = `state = 'pending' AND registered_at < ?`
+	ms := toMS(cutoff)
+	if _, err := t.tx.ExecContext(ctx, `DELETE FROM grants
+		WHERE principal IN (SELECT 'worker:' || id FROM workers WHERE `+where+`)
+		   OR scope IN (SELECT 'worker:' || id FROM workers WHERE `+where+`)`, ms, ms); err != nil {
+		return nil, fmt.Errorf("delete pending workers: %w", err)
+	}
+	rows, err := t.tx.QueryContext(ctx, `DELETE FROM workers WHERE `+where+` RETURNING id`, toMS(cutoff))
+	if err != nil {
+		return nil, fmt.Errorf("delete pending workers: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("delete pending workers: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// CountPendingWorkers returns the number of workers awaiting approval.
+func (s *Store) CountPendingWorkers(ctx context.Context) (int, error) {
+	var n int
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers WHERE state = 'pending'`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count pending workers: %w", err)
+	}
+	return n, nil
+}

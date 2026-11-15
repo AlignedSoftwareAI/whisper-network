@@ -1,0 +1,47 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not post tokens, passwords, hostnames or recordings. For security
+        problems use private vulnerability reporting instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, flags and request bodies, with secrets removed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `whisper-network --version`, or the image tag.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [server, worker, client CLI, admin CLI, web UI, container image, deploy example, documentation, other]
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS, architecture and kernel
+      description: For worker problems include the sandbox level the worker reports.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: JSONL from the server or worker. Remove secrets and private names.
+      render: json

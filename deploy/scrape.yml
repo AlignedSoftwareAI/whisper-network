@@ -1,0 +1,10 @@
+# VictoriaMetrics scrape configuration (Prometheus format).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: whisper-network
+    static_configs:
+      - targets: ["server:9090"]
+        labels:
+          service: whisper-network

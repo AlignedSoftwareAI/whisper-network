@@ -5,9 +5,8 @@ on:
     tags: [ v* ]
 
 permissions:
-  contents: write
-  packages: write
-  
+  contents: read
+
 env:
   REPO: ${{github.repository}}
 
@@ -22,28 +21,30 @@ jobs:
           - GOOS: windows
             ext: .exe
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: go.mod
 
     - name: Repo Name
       id: repo-name
-      run: echo name=$(basename ${{github.repository}}) >> $GITHUB_OUTPUT
+      run: echo "name=$(basename "$GITHUB_REPOSITORY")" >> "$GITHUB_OUTPUT"
 
     - name: Test
       run: go test -v ./...
 
     - name: Build
-      run: make package PROGRAM=bin/${{env.GOOS}}-${{env.GOARCH}}/${{steps.repo-name.outputs.name}}${{matrix.ext}} PACKAGE=dist/${{steps.repo-name.outputs.name}}-${{env.GOOS}}-${{env.GOARCH}}.zip
+      run: make package PROGRAM="bin/${GOOS}-${GOARCH}/${NAME}${EXT}" PACKAGE="dist/${NAME}-${GOOS}-${GOARCH}.zip"
       env:
         GOOS: ${{matrix.GOOS}}
         GOARCH: ${{matrix.GOARCH}}
+        NAME: ${{steps.repo-name.outputs.name}}
+        EXT: ${{matrix.ext}}
 
     - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: artifacts-${{matrix.GOOS}}-${{matrix.GOARCH}}
         path: dist
@@ -52,6 +53,10 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      REF_NAME: ${{ github.ref_name }}
     needs:
       - build
       - docker-build
@@ -59,17 +64,17 @@ jobs:
     - name: Check for release candidate
       id: rc-check
       run: |
-        if [[ "${{ github.ref_name }}" =~ -rc\. ]]; then
-          echo "is_rc=true" >> $GITHUB_OUTPUT
+        if [[ "$REF_NAME" =~ -rc\. ]]; then
+          echo "is_rc=true" >> "$GITHUB_OUTPUT"
         else
-          echo "is_rc=false" >> $GITHUB_OUTPUT
+          echo "is_rc=false" >> "$GITHUB_OUTPUT"
         fi
 
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         fetch-depth: 0
     - name: Download Artifacts
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         pattern: artifacts-*
         path: artifacts
@@ -77,15 +82,11 @@ jobs:
 
     - name: Install ChangeLog generator
       run: |
-        wget https://github.com/git-chglog/git-chglog/releases/download/v0.15.1/git-chglog_0.15.1_linux_amd64.tar.gz
-        tar xzf git-chglog*.tar.gz git-chglog
-
-    - name: "Get Last Release"
-      id: last_release
-      uses: InsonusK/get-latest-release@v1.1.0
-      with:
-        myToken: ${{ github.token }}
-        exclude_types: "draft|prerelease"
+        # sha256 of the official v0.15.1 linux_amd64 asset (from its checksums.txt)
+        archive=git-chglog_0.15.1_linux_amd64.tar.gz
+        wget "https://github.com/git-chglog/git-chglog/releases/download/v0.15.1/${archive}"
+        echo "5247e4602bac520e92fca317322fe716968a27aab1d91706f316627e3a3ee8e6  ${archive}" | sha256sum -c -
+        tar xzf "$archive" git-chglog
 
     - name: Generate Changelog for ${{ github.ref_name }}
       id: generate-changelog
@@ -93,7 +94,7 @@ jobs:
 
     - name: Create Release
       id: create_release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
       with:
         files: ./artifacts/*
         body_path: ./CHANGELOG.md
@@ -102,47 +103,89 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    name: Build the docker image
+    name: Build and push the docker images
+    permissions:
+      contents: read
+      packages: write
     env:
-      TAG: ${{ github.ref_name }}
+      REF_NAME: ${{ github.ref_name }}
     steps:
-      - name: Sanitize tag
-        run: echo "TAG=${TAG//\//-}" >> $GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Compute image names, tags and build arguments
+        run: |
+          {
+            echo "TAG=${REF_NAME//\//-}"
+            echo "IMAGE=ghcr.io/${REPO,,}"
+            echo "GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')"
+            echo "VERSION=$(./utils/version.sh)"
+          } >> "$GITHUB_ENV"
+
+      - name: Choose tags
+        id: tags
+        run: |
+          tag="${REF_NAME//\//-}"
+          image="ghcr.io/${REPO,,}"
+          worker="${image}:${tag}"
+          server="${image}:${tag}-server"
+          # Only tags without a pre-release suffix (e.g. not v1.2.0-rc.1)
+          # move `latest` and `stable`, so release candidates never reach
+          # users who follow those tags.
+          if [[ "$REF_NAME" != *-* ]]; then
+            worker="${worker},${image}:latest,${image}:stable"
+            server="${server},${image}:latest-server,${image}:stable-server"
+          fi
+          echo "worker=${worker}" >> "$GITHUB_OUTPUT"
+          echo "server=${server}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Build and push worker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: worker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.worker }}
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+            VERSION=${{ env.VERSION }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
 
-      - name: Build Image
-        run: make image IMAGE=ghcr.io/${{env.REPO}}:${{env.TAG}}
-
-      - name: Tag latest
-        run: docker tag ghcr.io/${{env.REPO}}:${{env.TAG}} ghcr.io/${{env.REPO}}:latest
-
-      - name: Push
-        run: docker push ghcr.io/${{env.REPO}}:${{env.TAG}}
-
-      - name: Push Latest
-        run: docker push ghcr.io/${{env.REPO}}:latest
-
-      - name: Tag stable
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: docker tag ghcr.io/${{env.REPO}}:${{env.TAG}} ghcr.io/${{env.REPO}}:stable
-
-      - name: Push stable
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: docker push ghcr.io/${{env.REPO}}:stable
+      - name: Build and push server image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.server }}
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+            VERSION=${{ env.VERSION }}
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
 
 # uncomment this if you're also using docker hub
 #      - name: Login to Docker Container Registry
 #        if: ${{ secrets.DOCKERHUB_TOKEN }}
-#        uses: docker/login-action@v4
+#        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
 #        with:
 #          registry: ghcr.io
 #          username: ${{ github.repository_owner }}

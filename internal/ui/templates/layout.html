@@ -1,0 +1,78 @@
+{{define "layout" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"historyEnabled":false,"selfRequestsOnly":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+<title>{{.Title}} · whisper-network</title>
+<link rel="stylesheet" href="{{.CSS}}">
+<script src="{{.HTMX}}" defer></script>
+</head>
+<body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
+<header class="top">
+  <a class="brand" href="/ui/">whisper-network</a>
+  {{- if .User}}
+  <nav aria-label="Main">
+    <a href="/ui/"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+    {{- if .Nav.Workers}}<a href="/ui/workers"{{if eq .Active "workers"}} aria-current="page"{{end}}>Workers</a>{{end}}
+    <a href="/ui/queues"{{if or (eq .Active "queues") (eq .Active "queue") (eq .Active "job")}} aria-current="page"{{end}}>Queues</a>
+    {{- if .Nav.Users}}<a href="/ui/users"{{if eq .Active "users"}} aria-current="page"{{end}}>Users</a>{{end}}
+    {{- if .Nav.Clients}}<a href="/ui/clients"{{if eq .Active "clients"}} aria-current="page"{{end}}>Clients</a>{{end}}
+    {{- if .Nav.Audit}}<a href="/ui/audit"{{if eq .Active "audit"}} aria-current="page"{{end}}>Audit</a>{{end}}
+  </nav>
+  <div class="who">
+    <a href="/ui/password" title="Change password">{{.User}}</a>
+    <form method="post" action="/ui/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="link">Sign out</button>
+    </form>
+  </div>
+  {{- end}}
+</header>
+<main>
+<div id="flash" role="alert" aria-live="polite"></div>
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{- end}}
+
+{{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
+
+{{define "revoke"}}
+<form method="post" action="/ui/grants/revoke" class="inline">
+  {{template "csrf" .CSRF}}
+  <input type="hidden" name="principal" value="{{.G.Principal}}">
+  <input type="hidden" name="role" value="{{.G.Role}}">
+  <input type="hidden" name="scope" value="{{.G.Scope}}">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <button type="submit" class="link danger">Revoke</button>
+</form>
+{{end}}
+
+{{define "grant-matrix"}}
+<fieldset class="grants">
+  <legend>Permissions</legend>
+  {{if .Any}}
+  {{with .Global}}
+  <div class="grant-global">
+    {{range .}}<label class="check"><input type="checkbox"{{if .Allowed}} name="grant" value="{{.Value}}"{{else}} disabled title="You cannot change this"{{end}}{{if .Checked}} checked{{end}}> <span><strong>{{.Label}}</strong> <span class="muted small">{{.Help}}</span></span></label>{{end}}
+  </div>
+  {{end}}
+  {{if .Rows}}
+  <div class="scroll">
+  <table class="data grant-matrix">
+    <thead><tr><th scope="col">Queue</th>{{range .Columns}}<th scope="col" class="c">{{.Label}}<div class="muted small help">{{.Help}}</div></th>{{end}}</tr></thead>
+    <tbody>
+    {{range .Rows}}{{$q := .Queue}}
+    <tr><th scope="row">{{$q}}</th>{{range $i, $c := .Cells}}<td class="c">{{if $c.Allowed}}<input type="checkbox" name="grant" value="{{$c.Value}}"{{if $c.Checked}} checked{{end}} aria-label="{{(index $.Columns $i).Label}} on {{$q}}">{{else if $c.Checked}}<input type="checkbox" checked disabled title="You cannot change this" aria-label="{{(index $.Columns $i).Label}} on {{$q}} (held; you cannot change it)">{{else}}<span class="muted" title="You cannot grant this">—</span>{{end}}</td>{{end}}</tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+  {{else}}<span class="muted">You cannot grant any permissions.</span>{{end}}
+</fieldset>
+{{end}}

@@ -1,0 +1,48 @@
+{{define "content"}}
+<h1>API clients</h1>
+{{with .Data.Created}}
+<section class="card secret" aria-live="polite">
+  <h2>Created client {{.Name}}</h2>
+  <p>Its token is shown <strong>only this once</strong>. Copy it now; it cannot be retrieved later.</p>
+  <p><code class="token">{{.Token}}</code></p>
+  <p class="muted small">Client ID <code>{{.ID}}</code></p>
+</section>
+{{end}}
+
+<section class="card">
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>Name</th><th>ID</th><th>Roles</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Clients}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><code>{{.ID}}</code></td>
+      <td>{{range .Grants}}<div class="chip">{{.Role}} {{.Scope}}</div>{{else}}<span class="muted">none</span>{{end}}</td>
+      <td>{{when .CreatedAt}}</td>
+      <td>{{ago .LastUsedAt}}</td>
+      <td>{{if .RevokedAt}}<span class="badge state-rejected">revoked</span>{{else}}
+        <a href="/ui/clients/{{.ID}}" class="button">Edit</a>
+        {{if .CanRevoke}}<form method="post" action="/ui/clients/{{.ID}}/revoke" class="inline" hx-post="/ui/clients/{{.ID}}/revoke" hx-confirm="Revoke this client's token? Programs using it stop working.">
+          {{template "csrf" $.CSRF}}
+          <button type="submit" class="danger">Revoke</button>
+        </form>{{end}}{{end}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="6" class="muted">No clients yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Mint a client token</h2>
+  <form method="post" action="/ui/clients" class="stack">
+    {{template "csrf" .CSRF}}
+    <label>Name <input name="name" maxlength="200" required placeholder="council-transcriber"></label>
+    {{template "grant-matrix" .Data.Grants}}
+    <button type="submit">Create client</button>
+  </form>
+</section>
+{{end}}

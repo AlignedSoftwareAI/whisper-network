@@ -1,0 +1,28 @@
+{{define "content"}}
+<h1>Audit log</h1>
+<section class="card">
+  <form method="get" action="/ui/audit" class="row">
+    {{with .Data.Filter}}
+    <label>Action starts with <input name="action" value="{{.Action}}" placeholder="grant."></label>
+    <label>Actor <input name="actor" value="{{.Actor}}" placeholder="user:alice"></label>
+    <label>Target <input name="target" value="{{.Target}}" placeholder="client:…"></label>
+    <label>Since <input name="since" value="{{.Since}}" placeholder="2026-11-01T00:00:00Z"></label>
+    <label>Until <input name="until" value="{{.Until}}" placeholder="RFC 3339"></label>
+    {{end}}
+    <button type="submit">Filter</button>
+  </form>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+    <tbody>
+    {{range .Data.Entries}}
+    <tr><td>{{when .TS}}</td><td>{{.Actor}}</td><td>{{.Action}}</td><td><code>{{.Target}}</code></td><td class="wrap small">{{.Detail}}</td></tr>
+    {{else}}
+    <tr><td colspan="5" class="muted">No entries.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p><a href="/ui/audit">Newest</a>{{with .Data.NextPage}} · <a href="{{.}}">Older →</a>{{end}}</p>
+</section>
+{{end}}

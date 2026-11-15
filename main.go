@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/deweysasser/golang-program/program"
+	"github.com/deweysasser/whisper-network/program"
 	"github.com/rs/zerolog/log"
 )
 
@@ -21,7 +23,10 @@ func main() {
 	}
 
 	// Put the default logger in the background context so that it's available everywhere
-	ctx := log.Logger.WithContext(context.Background())
+	// Cancel the context on SIGINT/SIGTERM so long-running commands shut down cleanly.
+	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx := log.Logger.WithContext(baseCtx)
 
 	// Make sure the background context is accessible everywhere
 	kongContext.BindTo(ctx, (*context.Context)(nil))
@@ -35,6 +40,7 @@ func main() {
 	// This ends up calling options.Run()
 	if err := kongContext.Run(&options); err != nil {
 		log.Err(err).Msg("Program failed")
+		stop()
 		os.Exit(1)
 	}
 }
