@@ -34,7 +34,7 @@
   </form>
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>Job</th><th>Label</th><th>State</th><th>Weight</th><th>Model</th><th class="n">Audio</th><th class="n">Tasks</th><th>Created</th></tr></thead>
+    <thead><tr><th>Job</th><th>Label</th><th>State</th><th>Weight</th><th>Model</th><th class="n">Audio</th><th class="n">Tasks</th><th>Workers</th><th>Created</th></tr></thead>
     <tbody>
     {{range .Data.Jobs}}
     <tr>
@@ -45,10 +45,11 @@
       <td>{{.Model}}</td>
       <td class="n">{{if .Media.DurationS}}{{secs .Media.DurationS}}{{else}}—{{end}}</td>
       <td class="n">{{.Tasks.Done}}/{{.Tasks.Total}}</td>
+      <td class="workers">{{template "job-workers" .Workers}}</td>
       <td>{{when .CreatedAt}}</td>
     </tr>
     {{else}}
-    <tr><td colspan="8" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
+    <tr><td colspan="9" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
     {{end}}
     </tbody>
   </table>
@@ -92,3 +93,11 @@
 </section>
 {{end}}
 {{end}}
+
+{{/* The Workers cell of a job row (jobWorkers): named workers link to their
+     card on the workers page; workers the viewer may not see are counted. */}}
+{{define "job-workers"}}
+{{- range $i, $w := .Workers}}{{if $i}}, {{end}}<a href="/ui/workers/{{$w.ID}}" title="{{$w.ID}}">{{$w.Name}}</a>{{end}}
+{{- if .Running}}{{if .Workers}}, {{end}}<span class="muted">{{if gt .Running 1}}{{.Running}} running{{else}}running{{end}}</span>{{end}}
+{{- if not (or .Workers .Running)}}<span class="muted">—</span>{{end}}
+{{- end}}

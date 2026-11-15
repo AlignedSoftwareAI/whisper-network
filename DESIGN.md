@@ -241,6 +241,7 @@ CREATE TABLE leases (
   id TEXT PRIMARY KEY, job_id TEXT NOT NULL, seq INTEGER NOT NULL,
   worker_id TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   ended_at INTEGER, outcome TEXT,             -- done | expired | released | failed | cancelled
+  heartbeat_at INTEGER,                       -- latest heartbeat, NULL until the first (UI only)
   FOREIGN KEY (job_id, seq) REFERENCES tasks ON DELETE CASCADE);
 CREATE INDEX leases_live ON leases (expires_at) WHERE ended_at IS NULL;
 CREATE INDEX leases_task_failures ON leases (job_id, seq, worker_id, ended_at)  -- retry elsewhere (§8.2)
@@ -354,6 +355,7 @@ Audit details never contain secrets or requester content: no passwords, tokens, 
 - `GET /job/{id}` returns **404, not 403**, when the caller can't see the job, so job IDs can't be probed.
 - A job the caller can see but not read (`view_all` or `queue_admin` without `read_all`, not the owner) is listed and its status document returned without `prompt` and `metadata`; its transcript and result are **403** (the job's existence is already known to the caller).
 - Workers can't see jobs at all. They see only their own leases.
+- **Which worker runs a job** (the UI's job table and job page) is shown only to `admin`, `queue_admin` on the job's queue, or `worker_admin` over that worker. Anyone else who can see the job (its owner, `view_all`) sees only that its tasks are running. A worker's description and hostname are operator-chosen and can name machines, people or places; a submitter has no need of them. A worker's page lists its current leases, but names the job only to principals who may view it.
 
 ---
 
@@ -471,9 +473,9 @@ The server validates the result: segment times must be monotonic, within the tas
 `/` redirects to `/ui`. Pages:
 
 - **Dashboard**: queue depths, running tasks, workers online, throughput (audio-hours per hour), and each queue's **actual vs configured share** (§8.2).
-- **Workers**: a table, pending first and filterable by state: name, state, queues, sandbox level, busy/total slots, last seen, the work counters' summary (§4.3: tasks done, audio hours, average realtime factor, failure rate; the breakdown on hover), and pause/resume in the row. Each worker has its own page with the facts list (including sandbox level), approve (queue picker), pause, resume and reject, per-queue `process` grants, its full work counters, and current leases. A worker the viewer may not see is a 404.
-- **Queues**: create, edit (weight is admin-only) and list jobs; per-queue grants.
-- **Jobs**: filters, detail view, delete, transcript download.
+- **Workers**: a table, pending first and filterable by state: name, state, queues, sandbox level, busy/total slots, last seen, the work counters' summary (§4.3: tasks done, audio hours, average realtime factor, failure rate; the breakdown on hover), and pause/resume in the row. Each worker has its own page with the facts list (including sandbox level), approve (queue picker), pause, resume and reject, per-queue `process` grants, its full work counters, and current leases (job, task and lease age). A worker the viewer may not see is a 404.
+- **Queues**: create, edit (weight is admin-only) and list jobs; per-queue grants. The job list's Workers column names the workers holding a running job's live leases, or for a done or failed job the workers that completed its tasks, each linking to the worker's page (subject to §5.3).
+- **Jobs**: filters, detail view (finished tasks, and each running task's worker, lease age, last heartbeat and attempt), delete, transcript download.
 - **Users and clients**: create, disable, grant roles, mint tokens (shown once).
 - **Audit log**: every approval, grant, weight change, deletion and token mint.
 

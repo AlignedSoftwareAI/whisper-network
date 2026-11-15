@@ -193,7 +193,7 @@ func TestWorkersTableActions(t *testing.T) {
 }
 
 // TestWorkerDetail: the page shows every fact, the controls the viewer may
-// use, and the extension-point sections render nothing yet.
+// use, and its (empty) current leases.
 func TestWorkerDetail(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -219,7 +219,7 @@ func TestWorkerDetail(t *testing.T) {
 		assert.Contains(t, body, s)
 	}
 	assert.NotContains(t, body, ">Pause</button>")
-	assert.NotContains(t, body, "Current leases", "extension point is empty")
+	assert.Regexp(t, `<h2>Current leases</h2>\s*<p>\s*<span class="muted">none</span>`, body)
 
 	// Approve from the page: back to the page, now with pause and the grant controls.
 	resp, _ = b.post("/ui/workers/"+id+"/approve", url.Values{"queue": {"public"}})

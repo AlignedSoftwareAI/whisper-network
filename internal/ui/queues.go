@@ -33,7 +33,7 @@ type queueView struct {
 	Visibility auth.Visibility
 	SeesJobs   bool
 	OwnOnly    bool // SeesOwn: the list holds the principal's jobs only
-	Jobs       []api.Job
+	Jobs       []jobRow
 	State      string // the state filter in force
 	States     []api.JobState
 	NextPage   string // URL of the next page, if any
@@ -149,9 +149,8 @@ func (u *UI) queueJobs(r *http.Request, rc *reqCtx, q *store.Queue, v *queueView
 	if err != nil {
 		return err
 	}
-	now := u.srv.Now()
-	for i := range jobs {
-		v.Jobs = append(v.Jobs, server.JobDocument(rc.P.Principal, &jobs[i], now))
+	if v.Jobs, err = u.queueJobRows(r.Context(), rc, q.Name, jobs); err != nil {
+		return err
 	}
 	if next != "" {
 		p := url.Values{"cursor": {next}}

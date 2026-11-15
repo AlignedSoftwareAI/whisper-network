@@ -28,8 +28,8 @@ type workersView struct {
 // Per-worker summary columns are fields here, filled in workerRowFor and
 // rendered as cells in the "worker-row" template with headers in the
 // workers page's table. The work counters (tasks done, audio hours, average
-// realtime factor, failure rate) are the first; the current lease count
-// (issue #27) is still to come.
+// realtime factor, failure rate) are such columns; busy slots come from the
+// last heartbeat, and the leases themselves are on the worker's page.
 type workerRow struct {
 	CSRF       string
 	ID         string
@@ -53,9 +53,8 @@ type workerRow struct {
 // the full controls.
 //
 // The worker's full statistics come from the embedded row's Stats and are
-// rendered by the "worker-stats" template. Extension point: its current
-// leases (#27) are added as fields here and rendered by the "worker-leases"
-// template on the worker page.
+// rendered by the "worker-stats" template; its current leases by the
+// "worker-leases" template.
 type workerDetail struct {
 	workerRow
 	Facts        api.WorkerFacts
@@ -65,6 +64,10 @@ type workerDetail struct {
 	Gauges       *api.Gauges
 	QueueGrants  []workerQueue
 	Back         string // this page, for forms that return here
+	// Leases are the worker's live leases on jobs the principal may view;
+	// OtherLeases counts the rest.
+	Leases      []workerLease
+	OtherLeases int
 
 	// Controls, each shown only when the principal may use it.
 	ApproveQueues []string // queues the principal may grant process on
@@ -176,6 +179,11 @@ func (u *UI) handleWorker(w http.ResponseWriter, r *http.Request, rc *reqCtx) er
 	if err != nil {
 		return err
 	}
+	leases, others, err := u.workerLeases(ctx, rc, []string{id})
+	if err != nil {
+		return err
+	}
+	v.Leases, v.OtherLeases = leases[id], others[id]
 	u.render(w, r, rc, http.StatusOK, "worker", "Worker "+v.Name, v)
 	return nil
 }

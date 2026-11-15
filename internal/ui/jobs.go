@@ -17,12 +17,13 @@ type jobView struct {
 	Job         api.Job
 	Owner       string
 	Tasks       []taskRow
+	Running     []runningRow
 	CanDelete   bool
 	CanDownload bool // a done job the viewer may read (auth.ActDownloadTranscript)
 }
 
-// taskRow is one finished task. The store exposes finished task outputs
-// only; pending and leased tasks appear as counts on the job.
+// taskRow is one finished task. Running tasks are runningRows; pending
+// tasks appear as a count on the job.
 type taskRow struct {
 	Seq           int
 	Kind          api.TaskKind
@@ -70,6 +71,9 @@ func (u *UI) handleJob(w http.ResponseWriter, r *http.Request, rc *reqCtx) error
 		v.Tasks = append(v.Tasks, taskRow{Seq: t.Seq, Kind: api.KindTranscribe,
 			StartS: samplesToSeconds(t.StartSample), EndS: samplesToSeconds(t.EndSample),
 			WorkerID: t.WorkerID, EngineVersion: t.EngineVersion, ComputeS: float64(t.ComputeMS) / 1000})
+	}
+	if v.Running, err = u.runningRows(r.Context(), rc, j); err != nil {
+		return err
 	}
 	u.render(w, r, rc, http.StatusOK, "job", "Job", v)
 	return nil
