@@ -163,6 +163,8 @@ Trade-off: the worker image ships three binaries (`whisper-network`, `whisper-cl
 
 `attempts` increments when a lease is created. The default `max_attempts` is 2: a task that has started twice without finishing is abandoned rather than retried forever. A lease that times out counts as an attempt. A lease the worker releases voluntarily on shutdown does **not** count.
 
+**Retry elsewhere.** A requeued task goes to a different worker if one will take it: a worker that failed the task or let its lease expire may not lease it again until `--retry-elsewhere-grace` (default 10 min) after that lease ended (§8.2). A failure is often the worker's fault (a broken model file or build, too little memory, a flaky disk), and an immediate retry on the same machine would burn the last attempt there. A released lease does not exclude its worker. When a job fails, its error names the worker of each failed attempt, e.g. `transcribe task 1 failed after 2 attempt(s) (on workers A, B): …`.
+
 ### 4.3 Schema (SQLite)
 
 ```sql
@@ -241,6 +243,8 @@ CREATE TABLE leases (
   ended_at INTEGER, outcome TEXT,             -- done | expired | released | failed | cancelled
   FOREIGN KEY (job_id, seq) REFERENCES tasks ON DELETE CASCADE);
 CREATE INDEX leases_live ON leases (expires_at) WHERE ended_at IS NULL;
+CREATE INDEX leases_task_failures ON leases (job_id, seq, worker_id, ended_at)  -- retry elsewhere (§8.2)
+  WHERE outcome IN ('failed','expired');
 
 CREATE TABLE sched_vtime (                    -- §8.2
   queue_id INTEGER NOT NULL REFERENCES queues ON DELETE CASCADE,
@@ -593,7 +597,7 @@ What follows from this:
 
 Each queue has a virtual time `V_q`, and each (queue, class) pair has `V_qc`. On every claim:
 
-1. **Candidates** are (q, c) pairs that have a pending task this worker may take: q is granted to the worker, the kind is offered, the model is offered, and for prepare the sandbox level is met.
+1. **Candidates** are (q, c) pairs that have a pending task this worker may take: q is granted to the worker, the kind is offered, the model is offered, for prepare the sandbox level is met, and the task is not excluded for this worker by the retry-elsewhere rule below.
 2. Pick q with the minimum `V_q`. Within q, pick c with the minimum `V_qc`. Within (q, c), pick the oldest job and its lowest pending seq. Ties break by queue ID.
 3. Charge the cost: `V_q += cost / W_q` and `V_qc += cost / w_c`.
 4. **Reactivation rule:** when a queue goes from having no pending work to having some (job created, or prepare finished), set `V_q = max(V_q, V_min)`, where `V_min` is the minimum `V` over queues that currently have pending work, or the last charged `V` if none do. Classes within a queue follow the same rule. This stops an idle queue from banking credit and then monopolising the fleet when it wakes up.
@@ -605,6 +609,23 @@ Each queue has a virtual time `V_q`, and each (queue, class) pair has `V_qc`. On
 - **Eligibility caveat:** when workers are granted different queue subsets, each claim is fair among *that worker's* candidates. The fleet-wide shares then approximate the weights rather than hit them exactly; this is the usual limitation of greedy fair queueing with heterogeneous servers. The dashboard and the metrics show actual against configured share, so this is visible rather than hidden.
 - Cost is charged at lease time, and an expired or failed lease is not refunded. The re-run is charged again. Refunding would add bookkeeping to fix a rare, small error. See §13.
 - Weight changes apply from the next charge; no retroactive correction.
+
+**Retry elsewhere (anti-affinity)**
+
+A task the claiming worker failed, or whose lease expired on it, is not eligible for that worker until `--retry-elsewhere-grace` (default 10 min) after that lease ended. Released and cancelled leases do not count. The condition is part of the eligibility fragment, so it applies to the candidate query and to the pick inside the chosen (q, c) alike:
+
+```sql
+AND NOT (t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x
+  WHERE x.job_id = t.job_id AND x.seq = t.seq AND x.worker_id = :worker
+    AND x.outcome IN ('failed','expired') AND x.ended_at > :now - :grace))
+```
+
+`t.attempts > 0` skips the lookup for tasks that never failed (a release refunds its attempt), and a partial index on failed and expired leases (`job_id, seq, worker_id, ended_at`) serves the rest.
+
+- **Fairness.** An excluded task is invisible to this worker's claim: a (q, c) whose only pending tasks are excluded is not a candidate, so the worker is served from its other candidates instead of getting nothing, and nothing is charged for the skipped task. The retry is charged to its queue when another worker (or, after the grace, the same one) takes it.
+- **Only one eligible worker.** Exclusion is not permanent. If no other worker takes the task within the grace (none is eligible, or all are busy), the worker that failed it may retry it. A single-worker fleet, or a queue only one worker processes, therefore still makes progress, delayed by at most the grace plus one claim long-poll (nothing wakes a waiting claim when the grace ends). The `task.leased` event of such a retry carries a `reason`, so a repeat failure on the same machine is visible. The alternative, failing the job at once with "only worker W is eligible and it already failed", was rejected: it turns every transient failure on a small fleet into a failed job, and whether another worker is eligible depends on which workers happen to be connected, which the claim cannot know.
+- **Disabling.** `--retry-elsewhere-grace 0` turns the rule off: the failing worker may retry at once, as before.
+- **Visibility.** A failed job's error names the worker of each failed or expired attempt (§4.2).
 
 **Implementation**
 - All of this runs inside the claim's `BEGIN IMMEDIATE` transaction:
@@ -720,7 +741,7 @@ Every line also carries `service="whisper-network"`, `mode` (`server`/`worker`),
 | `job.prepared` | info | server | `job_id`, `audio_s`, `tasks`, `canonical_bytes` |
 | `job.done` / `job.failed` | info / warn | server | `job_id`, `queue`, `wait_s`, `elapsed_s`, `compute_s`, `error` |
 | `job.deleted` / `job.purged` | info | server | `job_id`, `actor` / `what` |
-| `task.leased` | info | server | `job_id`, `task_seq`, `task_kind`, `lease_id`, `worker_id`, `queue`, `cost`, `vtime` |
+| `task.leased` | info | server | `job_id`, `task_seq`, `task_kind`, `lease_id`, `worker_id`, `queue`, `cost`, `vtime`; `reason` when the worker already failed this task (§8.2, retry elsewhere) |
 | `lease.expired` / `lease.released` | warn / info | server | `lease_id`, `worker_id`, `attempt` |
 | `task.done` / `task.failed` | info / warn | server + worker | `lease_id`, `compute_ms`, `audio_s`, `rtf`, `error`, `stderr_tail` (≤ 4 KiB) |
 | `worker.registered` / `.approved` / `.paused` / `.resumed` / `.rejected` | info | server | `worker_id`, `hostname`, `actor`, `queues` |
@@ -827,6 +848,7 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--trust-proxy` | off | Trust `X-Forwarded-For` (rightmost entry) for rate limiting and audit; only behind a proxy that sets it |
 | `--heartbeat-interval` | 30s | Leases live 3× this |
 | `--max-attempts` | 2 | |
+| `--retry-elsewhere-grace` | 10m | A worker that failed a task or let its lease expire may lease it again only this long after; `0` disables (§8.2) |
 | `--task-target` | 60m | |
 | `--split-window` | 60s | Search window around each split point |
 | `--class-weights` | `low=1,medium=2,high=4` | |

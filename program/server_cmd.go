@@ -44,6 +44,7 @@ type ServerCmd struct {
 
 	HeartbeatInterval time.Duration `default:"30s" env:"WHISPER_HEARTBEAT_INTERVAL" help:"Worker heartbeat interval; leases live 3x this"`
 	MaxAttempts       int           `default:"2" env:"WHISPER_MAX_ATTEMPTS" help:"Counted leases per task before the job fails"`
+	RetryGrace        time.Duration `name:"retry-elsewhere-grace" default:"10m" env:"WHISPER_RETRY_ELSEWHERE_GRACE" help:"Keep a task from the worker it failed on for this long, so another worker retries it; 0 disables"`
 	TaskTarget        time.Duration `default:"60m" env:"WHISPER_TASK_TARGET" help:"Target audio length of one transcribe task"`
 	SplitWindow       time.Duration `default:"60s" env:"WHISPER_SPLIT_WINDOW" help:"Search window around each split point"`
 	ClassWeights      string        `default:"low=1,medium=2,high=4" env:"WHISPER_CLASS_WEIGHTS" help:"Job weight-class shares"`
@@ -83,6 +84,9 @@ func (c *ServerCmd) Validate() error {
 	}
 	if c.MaxAttempts < 1 {
 		return errors.New("--max-attempts must be at least 1")
+	}
+	if c.RetryGrace < 0 {
+		return errors.New("--retry-elsewhere-grace must not be negative")
 	}
 	if c.MaxPendingSource < 1 || c.MaxUploadsEach < 1 || c.MaxAnalysesEach < 1 {
 		return errors.New("--max-pending-per-source, --max-uploads-per-principal and --max-analyses-per-principal must be at least 1")
@@ -124,6 +128,18 @@ func (c *ServerCmd) storeTuning() (sched.ClassWeights, map[string]float64, error
 		return sched.ClassWeights{}, nil, fmt.Errorf("--model-factors: %w", err)
 	}
 	return weights, mf, nil
+}
+
+func (c *ServerCmd) storeConfig() (store.Config, error) {
+	weights, factors, err := c.storeTuning()
+	if err != nil {
+		return store.Config{}, err
+	}
+	return store.Config{
+		Path: server.DBPath(c.Data), ClassWeights: weights, ModelFactors: factors,
+		MaxAttempts: c.MaxAttempts, RetryElsewhereGrace: c.RetryGrace,
+		PrepareMinSandbox: api.SandboxLevel(c.PrepareMinSandbox),
+	}, nil
 }
 
 func (c *ServerCmd) serverConfig() (server.Config, error) {
@@ -201,17 +217,14 @@ func (c *ServerCmd) Run(ctx context.Context, logger zerolog.Logger) error {
 	if err != nil {
 		return err
 	}
-	weights, factors, err := c.storeTuning()
+	scfg, err := c.storeConfig()
 	if err != nil {
 		return err
 	}
 	if err := prepareDataDir(c.Data, lg); err != nil {
 		return err
 	}
-	st, err := store.Open(ctx, store.Config{
-		Path: server.DBPath(c.Data), ClassWeights: weights, ModelFactors: factors,
-		MaxAttempts: c.MaxAttempts, PrepareMinSandbox: api.SandboxLevel(c.PrepareMinSandbox),
-	})
+	st, err := store.Open(ctx, scfg)
 	if err != nil {
 		return err
 	}

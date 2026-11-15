@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/deweysasser/whisper-network/internal/api"
@@ -155,13 +156,46 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 		WHERE job_id = ? AND seq = ?`, end.Attempt, errText, l.JobID, l.Seq); err != nil {
 		return nil, fmt.Errorf("fail task: %w", err)
 	}
-	msg := fmt.Sprintf("%s task %d failed after %d attempt(s): %s", l.Kind, l.Seq, end.Attempt, reason)
+	workers, err := failedOn(ctx, tx, l.JobID, l.Seq)
+	if err != nil {
+		return nil, err
+	}
+	msg := fmt.Sprintf("%s task %d failed after %d attempt(s)", l.Kind, l.Seq, end.Attempt)
+	switch len(workers) {
+	case 0:
+	case 1:
+		msg += " (on worker " + workers[0] + ")"
+	default:
+		msg += " (on workers " + strings.Join(workers, ", ") + ")"
+	}
+	msg += ": " + reason
 	end.Cancelled, err = failJob(ctx, tx, l.JobID, msg, now)
 	if err != nil {
 		return nil, err
 	}
 	end.JobFailed = true
 	return end, nil
+}
+
+// failedOn returns the worker of each failed or expired lease on a task,
+// oldest first (repeating a worker that failed it more than once), so a
+// failed job's error says where its attempts ran.
+func failedOn(ctx context.Context, tx *sql.Tx, jobID string, seq int) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT worker_id FROM leases WHERE job_id = ? AND seq = ?
+		AND outcome IN ('failed','expired') ORDER BY created_at, rowid`, jobID, seq)
+	if err != nil {
+		return nil, fmt.Errorf("failed attempts: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var w string
+		if err := rows.Scan(&w); err != nil {
+			return nil, fmt.Errorf("failed attempts: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 // LeaseAgeLimit bounds how long heartbeats can keep a lease alive: the
