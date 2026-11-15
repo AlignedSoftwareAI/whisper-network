@@ -217,6 +217,10 @@ func TestShutdownReleasesLeases(t *testing.T) {
 	cancel, done := h.run()
 	h.activate()
 	h.liveLease(task)
+	// Wait until the worker itself holds the lease (it heartbeats only for
+	// leases it received). Cancelling while the claim response is still in
+	// flight tests a different case: the worker never learns of the lease.
+	h.eventually(func() bool { return h.srv.LeasesFor(task)[0].Heartbeats >= 1 }, "worker never held the lease")
 	cancel()
 	require.NoError(t, waitDone(t, done))
 	l := h.srv.LeasesFor(task)
@@ -237,6 +241,10 @@ func TestDrainFinishesRunningTasks(t *testing.T) {
 	cancel, done := h.run()
 	h.activate()
 	h.liveLease(task)
+	// Wait until the worker itself holds the lease (it heartbeats only for
+	// leases it received). Cancelling while the claim response is still in
+	// flight tests a different case: the worker never learns of the lease.
+	h.eventually(func() bool { return h.srv.LeasesFor(task)[0].Heartbeats >= 1 }, "worker never held the lease")
 	cancel()
 	require.NoError(t, waitDone(t, done))
 	l := h.srv.LeasesFor(task)
