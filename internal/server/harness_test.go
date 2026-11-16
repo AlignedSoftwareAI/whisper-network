@@ -32,6 +32,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/models"
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 )
 
 // fakeClock is a settable clock shared by the store and the server.
@@ -141,7 +142,7 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 	cfg.DataDir = h.dir
 	cfg.TaskTarget = 3 * time.Second
 	cfg.SplitWindow = 500 * time.Millisecond
-	cfg.MaxClaimWait = 10 * time.Second
+	cfg.MaxClaimWait = testscale.D(10 * time.Second)
 	cfg.Models = []string{"small.en", fakeModel.Name, badModel.Name}
 	cfg.PasswordParams = auth.PasswordParams{MemoryKiB: 64, Time: 1, Threads: 1}
 	scfg := store.Config{Path: filepath.Join(h.dir, "wn.db"), Now: h.clk.Now}

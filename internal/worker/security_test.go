@@ -19,6 +19,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/media"
 	"github.com/deweysasser/whisper-network/internal/sandbox"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 	"github.com/deweysasser/whisper-network/internal/worker/workertest"
 )
 
@@ -153,7 +154,7 @@ func TestChildTimeoutKillsDescendants(t *testing.T) {
 	// Long enough for the fake child (a re-executed, possibly race-built
 	// test binary) to start and report its grandchild even on a loaded
 	// machine; the child then hangs, so the timeout still fires.
-	h.cfg.Limits.TimeoutBase = 5 * time.Second
+	h.cfg.Limits.TimeoutBase = testscale.D(5 * time.Second)
 	task := h.srv.AddTask(workertest.Task{Kind: api.KindTranscribe, Input: workertest.WAV(1), Model: "tiny.test"})
 	_, _ = h.run()
 	h.activate()
@@ -164,7 +165,7 @@ func TestChildTimeoutKillsDescendants(t *testing.T) {
 	require.NotNil(t, m, "the child was killed before it reported its grandchild (timeout shorter than startup?); stderr: %q", f.StderrTail)
 	pid, _ := strconv.Atoi(m[1])
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	assert.Eventually(t, func() bool { return processGone(pid) }, 5*time.Second, 10*time.Millisecond,
+	assert.Eventually(t, func() bool { return processGone(pid) }, testscale.D(5*time.Second), 10*time.Millisecond,
 		"the grandchild outlived the timeout kill")
 }
 

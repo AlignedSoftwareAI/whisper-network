@@ -14,6 +14,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/media"
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 )
 
 // TestFencing: a lease that expired cannot heartbeat or deliver, and its
@@ -213,16 +214,20 @@ func TestLongPoll(t *testing.T) {
 	assert.Nil(t, h.claim(wid, wtok, "300ms", nil))
 	assert.GreaterOrEqual(t, time.Since(start), 300*time.Millisecond, "waited for the full wait")
 
+	// A claim that ran out its wait would return no lease, so a lease is
+	// proof of the wake-up; the wait is long and scaled so that a loaded
+	// runner cannot mistake a slow wake for a timeout.
+	wait := testscale.D(8 * time.Second)
 	got := make(chan *api.Lease, 1)
-	go func() { got <- h.claim(wid, wtok, "8s", nil) }()
+	go func() { got <- h.claim(wid, wtok, wait.String(), nil) }()
 	time.Sleep(200 * time.Millisecond) // let the claim start waiting
 	submitted := time.Now()
 	h.submit(client, "public", api.JobParams{Model: "small.en"}, canonicalWAV(speech(1, media.SampleRate)))
 	select {
 	case l := <-got:
-		require.NotNil(t, l)
-		assert.Less(t, time.Since(submitted), 2*time.Second, "woken by the new job, not the timeout")
-	case <-time.After(6 * time.Second):
+		require.NotNil(t, l, "woken by the new job, not the timeout")
+		assert.Less(t, time.Since(submitted), wait, "woken before the wait ran out")
+	case <-time.After(wait + testscale.D(2*time.Second)):
 		t.Fatal("claim was not woken by the new job")
 	}
 
@@ -241,15 +246,16 @@ func TestLongPollWakesOnRequeue(t *testing.T) {
 	l := h.claim(aID, aTok, "", nil)
 	require.NotNil(t, l)
 
+	wait := testscale.D(8 * time.Second)
 	got := make(chan *api.Lease, 1)
-	go func() { got <- h.claim(bID, bTok, "8s", nil) }()
+	go func() { got <- h.claim(bID, bTok, wait.String(), nil) }()
 	time.Sleep(200 * time.Millisecond)
 	h.expect("DELETE", "/lease/"+l.ID, aTok, nil, http.StatusNoContent, nil)
 	select {
 	case l2 := <-got:
-		require.NotNil(t, l2)
+		require.NotNil(t, l2, "woken by the release, not the timeout")
 		assert.Equal(t, l.Seq, l2.Seq)
-	case <-time.After(6 * time.Second):
+	case <-time.After(wait + testscale.D(2*time.Second)):
 		t.Fatal("claim was not woken by the release")
 	}
 }

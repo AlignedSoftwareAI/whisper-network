@@ -538,6 +538,11 @@ make image-server    # server-only distroless image
 make tools           # install staticcheck, gocritic, gosec
 ```
 
+Tests that run on real time (the end-to-end harness, worker and server long
+polls) scale their lease TTLs, heartbeat intervals and deadlines by
+`WN_TEST_TIME_SCALE` (default 1, doubled under `-race`). Raise it on a slow
+or heavily shared machine, e.g. `WN_TEST_TIME_SCALE=3 make test-race`.
+
 The build system follows the [golang-program template](README-TEMPLATE.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow.
 

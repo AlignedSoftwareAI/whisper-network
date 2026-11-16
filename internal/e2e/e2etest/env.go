@@ -40,6 +40,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/server"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 	"github.com/deweysasser/whisper-network/internal/worker/workertest"
 )
 
@@ -109,8 +110,23 @@ func (b *SyncBuffer) Events(t testing.TB, ev obs.Event) []map[string]any {
 	return out
 }
 
-// FastLeases sets the shortest heartbeat interval, 1 s (3 s leases).
-func FastLeases(c *server.Config, _ *store.Config) { c.HeartbeatInterval = time.Second }
+// Heartbeat is the default heartbeat interval of an Env: 10 s scaled, so
+// leases live 30 s or more and survive a starved runner. Tests that wait for
+// a heartbeat to carry news (a 410, a rejection) wait up to this long.
+var Heartbeat = testscale.Seconds(10 * time.Second)
+
+// FastHeartbeat is the heartbeat interval of FastLeases: 1 s scaled.
+var FastHeartbeat = testscale.Seconds(time.Second)
+
+// FastLeases sets the shortest heartbeat interval, FastHeartbeat (leases of
+// three times that). Use it only where lease expiry is the subject, and keep
+// such a test correct if a healthy worker's lease expires too: a loaded
+// runner can starve a heartbeat for longer than a short lease lives (#43).
+func FastLeases(c *server.Config, _ *store.Config) { c.HeartbeatInterval = FastHeartbeat }
+
+// LeaseTTL is how long a lease lives without a heartbeat in an Env
+// configured with c.
+func LeaseTTL(c server.Config) time.Duration { return 3 * c.HeartbeatInterval }
 
 // Option adjusts the server and store configuration before the first start.
 type Option func(*server.Config, *store.Config)
@@ -146,10 +162,9 @@ type Env struct {
 // Password is the bootstrap admin password.
 const Password = "e2e-admin-password"
 
-// New starts a server with fast test timings: 2 s heartbeats (6 s leases,
-// enough slack for a loaded -race run; use FastLeases where expiry is the
-// subject),
-// a 100 ms reaper, 2 s claim long-polls, the fake model allowlisted and
+// New starts a server with fast test timings: Heartbeat (leases long
+// enough to survive a starved runner; use FastLeases where expiry is the
+// subject), a 100 ms reaper, 2 s claim long-polls, the fake model allowlisted and
 // already in the server's model cache, and no VAD model.
 func New(t testing.TB, opts ...Option) *Env {
 	t.Helper()
@@ -157,7 +172,7 @@ func New(t testing.TB, opts ...Option) *Env {
 		Fakes: workertest.InstallFakes(t)}
 	cfg := server.DefaultConfig()
 	cfg.DataDir = e.Dir
-	cfg.HeartbeatInterval = 2 * time.Second
+	cfg.HeartbeatInterval = Heartbeat
 	cfg.PollInterval = time.Second
 	cfg.MaxClaimWait = 2 * time.Second
 	cfg.TaskTarget = 4 * time.Second
@@ -167,7 +182,7 @@ func New(t testing.TB, opts ...Option) *Env {
 	cfg.PasswordParams = auth.PasswordParams{MemoryKiB: 64, Time: 1, Threads: 1}
 	cfg.ReapInterval = 100 * time.Millisecond
 	cfg.StatsInterval = 200 * time.Millisecond
-	cfg.ShutdownTimeout = 5 * time.Second
+	cfg.ShutdownTimeout = testscale.D(5 * time.Second)
 	cfg.RegisterBurst = 100
 	cfg.RegisterInterval = time.Millisecond
 	e.StoreCfg = store.Config{Path: server.DBPath(e.Dir)}
@@ -218,7 +233,7 @@ func (e *Env) start() {
 	require.Eventually(t, func() bool {
 		ln, err = net.Listen("tcp", addr)
 		return err == nil
-	}, 5*time.Second, 20*time.Millisecond, "listen on %s", addr)
+	}, Timeout, 20*time.Millisecond, "listen on %s", addr)
 	e.addr = ln.Addr().String()
 	e.URL = "http://" + e.addr
 	sctx, cancel := context.WithCancel(ctx)
@@ -253,7 +268,7 @@ func (e *Env) Stop() {
 		if err != nil {
 			e.T.Errorf("server Serve: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testscale.D(15 * time.Second)):
 		e.T.Errorf("server did not stop")
 	}
 	if err := st.Close(); err != nil {
@@ -402,8 +417,9 @@ func deref(s *string) string {
 	return *s
 }
 
-// Timeout bounds every wait in these tests.
-const Timeout = 30 * time.Second
+// Timeout bounds every wait in these tests: 60 s scaled, longer than two
+// default heartbeats.
+var Timeout = testscale.D(60 * time.Second)
 
 // Eventually polls cond every 10 ms until it holds, failing after Timeout.
 func (e *Env) Eventually(cond func() bool, msg string) {

@@ -2,6 +2,7 @@ package program
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/sched"
 	"github.com/deweysasser/whisper-network/internal/server"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 )
 
 func parse(t *testing.T, args ...string) (*Options, error) {
@@ -175,7 +177,7 @@ func TestServerCmdRun(t *testing.T) {
 		defer st.Close()
 		_, err = st.UserByUsername(context.Background(), store.AdminUsername)
 		return err == nil
-	}, 5*time.Second, 20*time.Millisecond)
+	}, testscale.D(30*time.Second), 20*time.Millisecond)
 	cancel()
 	select {
 	case err := <-done:
@@ -187,26 +189,40 @@ func TestServerCmdRun(t *testing.T) {
 
 func TestServerCmdServesHTTP(t *testing.T) {
 	data := t.TempDir()
-	opts, err := parse(t, "server", "--data", data, "--listen", "127.0.0.1:18931", "--metrics-listen", "127.0.0.1:18932")
+	addr, metricsAddr := freeAddr(t), freeAddr(t)
+	opts, err := parse(t, "server", "--data", data, "--listen", addr, "--metrics-listen", metricsAddr)
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- opts.Server.Run(ctx, zerolog.Nop()) }()
+	// Startup hashes the bootstrap password with the production Argon2
+	// parameters, which takes a while on a loaded runner.
 	require.Eventually(t, func() bool {
-		resp, err := http.Get("http://127.0.0.1:18931/healthz")
+		resp, err := http.Get("http://" + addr + "/healthz")
 		if err != nil {
 			return false
 		}
 		resp.Body.Close()
 		return resp.StatusCode == 200
-	}, 5*time.Second, 20*time.Millisecond)
-	resp, err := http.Get("http://127.0.0.1:18932/metrics")
+	}, testscale.D(30*time.Second), 20*time.Millisecond)
+	resp, err := http.Get("http://" + metricsAddr + "/metrics")
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, 200, resp.StatusCode)
 	cancel()
 	require.NoError(t, <-done)
+}
+
+// freeAddr returns a loopback address with a port that was free a moment
+// ago, for a command that takes an address rather than a listener.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	return addr
 }
 
 func TestAdminCommands(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/models"
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/sandbox"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 	"github.com/deweysasser/whisper-network/internal/worker/workertest"
 )
 
@@ -159,7 +160,7 @@ func (h *harness) start(ctx context.Context) (*Worker, <-chan error) {
 	h.t.Cleanup(func() {
 		select {
 		case <-finished:
-		case <-time.After(20 * time.Second):
+		case <-time.After(testscale.D(20 * time.Second)):
 			h.t.Error("worker did not stop")
 		}
 	})
@@ -184,7 +185,7 @@ func (h *harness) worker() workertest.Worker {
 		var ok bool
 		w, ok = h.srv.OnlyWorker()
 		return ok
-	}, 10*time.Second, 5*time.Millisecond, "worker never registered")
+	}, testscale.D(10*time.Second), 5*time.Millisecond, "worker never registered")
 	return w
 }
 
@@ -196,10 +197,10 @@ func (h *harness) activate() string {
 	return w.ID
 }
 
-// eventually waits up to 20 s for cond.
+// eventually waits up to 20 s (scaled) for cond.
 func (h *harness) eventually(cond func() bool, msg string) {
 	h.t.Helper()
-	require.Eventually(h.t, cond, 20*time.Second, 5*time.Millisecond, msg)
+	require.Eventually(h.t, cond, testscale.D(20*time.Second), 5*time.Millisecond, msg)
 }
 
 // waitEvent waits for the worker to log event.
@@ -234,7 +235,7 @@ func waitDone(t *testing.T, done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(20 * time.Second):
+	case <-time.After(testscale.D(20 * time.Second)):
 		t.Fatal("worker did not return")
 		return nil
 	}
