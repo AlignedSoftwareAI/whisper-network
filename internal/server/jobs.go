@@ -37,11 +37,12 @@ func (s *Server) visibleJob(r *http.Request, p *Principal, act auth.Action) (*st
 	return j, nil
 }
 
-// JobDocument builds the job status document as p may see it. The
-// client-supplied content (prompt and metadata) is left out unless p may
-// read the job (auth.ActViewJobContent: its owner, read_all on its queue, or
-// admin); view_all and queue_admin alone see status only. The caller must
-// already have checked that p may see the job at all.
+// JobDocument builds the job status document as p may see it. Anyone who
+// may see the job sees everything describing it, prompt and metadata
+// included (auth.ActViewJobContent follows auth.ActViewJob); only the
+// transcript itself needs read_all. The check stays as a guard for callers
+// that build documents for principals that may not see the job. The caller
+// must already have checked that p may see the job at all.
 func JobDocument(p auth.Principal, j *store.Job, now time.Time) api.Job {
 	doc := j.API(now)
 	if !auth.Can(p, auth.ActViewJobContent, auth.Resource{Queue: j.QueueName, OwnerID: j.ClientID}) {
@@ -55,7 +56,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request, p *Princip
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, JobDocument(p.Principal, j, s.now()))
+	writeJSON(w, http.StatusOK, s.JobDoc(r.Context(), p.Principal, j))
 	return nil
 }
 
@@ -101,11 +102,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, p *Princ
 	if err != nil {
 		return err
 	}
-	out := api.JobList{Jobs: make([]api.Job, len(jobs)), NextCursor: next}
-	now := s.now()
-	for i := range jobs {
-		out.Jobs[i] = JobDocument(p.Principal, &jobs[i], now)
-	}
+	out := api.JobList{Jobs: s.JobDocuments(r.Context(), p.Principal, jobs), NextCursor: next}
 	writeJSON(w, http.StatusOK, out)
 	return nil
 }
@@ -233,3 +230,51 @@ func (d *downloadWriter) Write(b []byte) (int, error) {
 }
 
 func (d *downloadWriter) Unwrap() http.ResponseWriter { return d.ResponseWriter }
+
+// JobDocuments builds the status documents of jobs as p may see them
+// (JobDocument), adding each job's submitter. Submitter names are resolved
+// once per distinct owner, so a page of jobs costs one lookup per owner.
+func (s *Server) JobDocuments(ctx context.Context, p auth.Principal, jobs []store.Job) []api.Job {
+	now := s.now()
+	names := map[string]*api.Submitter{}
+	out := make([]api.Job, len(jobs))
+	for i := range jobs {
+		out[i] = JobDocument(p, &jobs[i], now)
+		owner := jobs[i].ClientID
+		sub, ok := names[owner]
+		if !ok {
+			sub = s.submitter(ctx, owner)
+			names[owner] = sub
+		}
+		out[i].SubmittedBy = sub
+	}
+	return out
+}
+
+// JobDoc is JobDocuments for one job.
+func (s *Server) JobDoc(ctx context.Context, p auth.Principal, j *store.Job) api.Job {
+	return s.JobDocuments(ctx, p, []store.Job{*j})[0]
+}
+
+// submitter resolves a job owner principal id (a client id, or
+// "user:<id>" for jobs created through the UI) to a Submitter. A
+// principal that no longer exists keeps its id with no name.
+func (s *Server) submitter(ctx context.Context, owner string) *api.Submitter {
+	if owner == "" {
+		return nil
+	}
+	if rest, ok := strings.CutPrefix(owner, "user:"); ok {
+		sub := &api.Submitter{Kind: "user", ID: rest}
+		if id, err := strconv.ParseInt(rest, 10, 64); err == nil {
+			if u, err := s.st.UserByID(ctx, id); err == nil {
+				sub.Name = u.Username
+			}
+		}
+		return sub
+	}
+	sub := &api.Submitter{Kind: "client", ID: owner}
+	if c, err := s.st.ClientByID(ctx, owner); err == nil {
+		sub.Name = c.Name
+	}
+	return sub
+}

@@ -11,11 +11,12 @@ const (
 	ActSubmitJob
 	// ActListQueue lists jobs on Resource.Queue; see Visibility for which.
 	ActListQueue
-	// ActViewJob reads a job's status document, without its content
-	// (prompt and metadata); needs Queue and OwnerID.
+	// ActViewJob reads a job's status document; needs Queue and OwnerID.
 	ActViewJob
-	// ActViewJobContent reads the client-supplied content of a job's status
-	// document (prompt and metadata); needs Queue and OwnerID.
+	// ActViewJobContent reads the client-supplied fields of a job's status
+	// document (prompt, metadata, submitter). Same rule as ActViewJob: only
+	// the transcript (ActDownloadTranscript) needs read_all. Needs Queue and
+	// OwnerID.
 	ActViewJobContent
 	// ActDownloadTranscript reads a job's transcript or result JSON; needs
 	// Queue and OwnerID.
