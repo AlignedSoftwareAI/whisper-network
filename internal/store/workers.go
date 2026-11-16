@@ -248,7 +248,7 @@ func (t *Tx) SetWorkerState(ctx context.Context, id string, state api.WorkerStat
 		return nil, err
 	}
 	for _, l := range ls {
-		if _, err := t.s.endLease(ctx, t.tx, l, api.OutcomeCancelled, true, "worker rejected", now); err != nil {
+		if _, err := t.s.endLease(ctx, t.tx, l, api.OutcomeCancelled, true, "worker rejected", "", now); err != nil {
 			return nil, err
 		}
 		cancelled = append(cancelled, l.ID)

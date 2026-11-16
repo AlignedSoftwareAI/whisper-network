@@ -20,13 +20,16 @@ type StrandedTask struct {
 	Workers []string
 	// Reason is the job error FailStranded recorded.
 	Reason string
+	// JobFailed is true if the job is now failed; false while sibling
+	// leases of the failing job are still live (DESIGN.md §4.2).
+	JobFailed bool
 }
 
 // FailStranded fails every pending task that failed on some worker and has
 // been waiting for limit since it last went back to pending: every worker
 // that took it since then failed it, and no other eligible worker has taken
-// it (DESIGN.md §8.2). Each such task fails its job with a reason naming the
-// workers that failed it. The reaper calls it; limit must be positive.
+// it (DESIGN.md §8.2). Each such task fails for good and makes its job
+// failing, with a reason naming the workers that failed it. The reaper calls it; limit must be positive.
 func (s *Store) FailStranded(ctx context.Context, limit time.Duration) ([]StrandedTask, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("%w: retry wait limit must be positive", ErrInvalid)
@@ -45,7 +48,7 @@ func (s *Store) FailStranded(ctx context.Context, limit time.Duration) ([]Strand
 		rows, err := tx.QueryContext(ctx, `SELECT t.job_id, t.seq, t.kind, COALESCE(t.error, '') FROM tasks t
 			WHERE t.state = 'pending' AND t.attempts > 0
 			AND (SELECT MAX(x.ended_at) FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
-				AND x.outcome IN ('failed','expired')) <= ?
+				AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work') <= ?
 			AND NOT EXISTS (SELECT 1 FROM leases y WHERE y.job_id = t.job_id AND y.seq = t.seq
 				AND (y.ended_at IS NULL OR y.ended_at > ?))
 			ORDER BY t.job_id, t.seq`, cutoff, cutoff)
@@ -85,7 +88,10 @@ func (s *Store) FailStranded(ctx context.Context, limit time.Duration) ([]Strand
 				st.JobID, st.Seq); err != nil {
 				return fmt.Errorf("fail stranded task: %w", err)
 			}
-			if _, err := failJob(ctx, tx, st.JobID, st.Reason, now); err != nil {
+			if err := doomJob(ctx, tx, st.JobID, st.Reason, now); err != nil {
+				return err
+			}
+			if st.JobFailed, err = settleJob(ctx, tx, st.JobID, now); err != nil {
 				return err
 			}
 			kept = append(kept, st)
@@ -114,7 +120,7 @@ func shortDuration(d time.Duration) string {
 func (s *Store) RetryExclusion(ctx context.Context, jobID string, seq int, workerID string) (string, error) {
 	var outcome api.LeaseOutcome
 	err := s.r.QueryRowContext(ctx, `SELECT outcome FROM leases WHERE job_id = ? AND seq = ? AND worker_id = ?
-		AND outcome IN ('failed','expired') ORDER BY ended_at DESC, rowid DESC LIMIT 1`,
+		AND `+countedFailureSQL+` ORDER BY ended_at DESC, rowid DESC LIMIT 1`,
 		jobID, seq, workerID).Scan(&outcome)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

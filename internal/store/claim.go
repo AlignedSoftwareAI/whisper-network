@@ -82,13 +82,14 @@ const processGrantSQL = `EXISTS (SELECT 1 FROM grants g WHERE g.principal = ? AN
 	AND (g.scope = '*' OR g.scope = 'queue:' || j.queue_id))`
 
 // failedHereSQL is a condition (over t = tasks, with the worker id as its one
-// argument) that the worker has a failed or expired lease on the task. The
+// argument) that the worker has a failed (other than before work started) or
+// expired lease on the task. The
 // t.attempts check skips the lookup for tasks that never failed anywhere: a
 // task's attempts count the distinct workers its failed and expired leases
 // ran on (plus one while it is leased), so it is 0 for a pending task with
 // none.
 const failedHereSQL = `(t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
-	AND x.worker_id = ? AND x.outcome IN ('failed','expired')))`
+	AND x.worker_id = ? AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work'))`
 
 // eligibilitySQL returns the WHERE fragment (over t = tasks, j = jobs) that
 // selects pending tasks workerID may take, or ok = false if none can match.

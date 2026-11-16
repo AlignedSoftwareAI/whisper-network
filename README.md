@@ -70,8 +70,14 @@ different workers (default 2), so one bad worker cannot fail a job. A
 failure caused by the input (for example media ffmpeg cannot read) fails the
 job at once. If no other eligible worker takes a failed task within
 `--retry-wait-limit` (default 24h), for example on a single-worker fleet,
-the job fails with an error naming the workers that failed it. When the last
-transcribe task finishes, the server assembles the transcript.
+the job fails with an error naming the workers that failed it. A failure the
+worker reports before starting work (a missing tool or model, a foreign
+`input_url`) uses no attempt and does not exclude the worker; it counts only
+toward the circuit breaker. When a task fails for good, the job's queued tasks
+are cancelled but tasks already running finish and keep their results; the job
+becomes `failed` when the last one ends, with an error ending in its progress
+(`…; 2 of 12 tasks done, 4 cancelled`). When the last transcribe task
+finishes, the server assembles the transcript.
 
 ## Quick start with Docker
 
@@ -251,7 +257,9 @@ at least two jobs, the server pauses it, audits the pause with the actor
 `system` and the reason, logs `worker.auto_paused`, and sets
 `whisper_worker_auto_paused`. A completed task resets the streak. Failures
 caused by the input (ffmpeg rejecting an upload) do not count, and the two-job
-rule keeps one bad upload from pausing healthy workers. The Workers page shows
+rule keeps one bad upload from pausing healthy workers; it does not apply to
+failures before work starts, so a misconfigured worker is paused even with one
+job queued. The Workers page shows
 the reason; resuming the worker clears it. `0` disables the breaker.
 
 **Sandbox levels.** Every ffmpeg and whisper-cli child runs under

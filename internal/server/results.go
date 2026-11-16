@@ -392,7 +392,7 @@ func (s *Server) transcribeResult(w http.ResponseWriter, r *http.Request, p *Pri
 	if err != nil {
 		return err
 	}
-	complete, err := s.st.CompleteTranscribe(ctx, l.ID, p.ID, store.TranscribeCompletion{
+	end, err := s.st.CompleteTranscribe(ctx, l.ID, p.ID, store.TranscribeCompletion{
 		Result: stored, EngineVersion: res.EngineVersion, ComputeMS: res.ComputeMS})
 	if err != nil {
 		return err
@@ -413,11 +413,14 @@ func (s *Server) transcribeResult(w http.ResponseWriter, r *http.Request, p *Pri
 		s.metrics.TaskRealtimeFactor(l.Model, p.ID, rtf)
 		s.metrics.WorkerAudio(p.ID, l.Model, audio)
 	}
-	if complete {
+	switch {
+	case end.JobComplete:
 		if err := s.finishJob(ctx, l.JobID); err != nil {
 			// The result is stored; the reaper retries assembly.
 			s.log.Error().Err(err).Str(obs.FieldJobID, l.JobID).Msg("assembling transcript failed")
 		}
+	case end.JobFailed:
+		s.jobFinished(ctx, l.JobID)
 	}
 	writeJSON(w, http.StatusOK, resultAck{Lease: l.ID, Outcome: api.OutcomeDone})
 	return nil

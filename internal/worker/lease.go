@@ -22,6 +22,8 @@ type taskError struct {
 	stderr    string
 	retryable bool
 	err       error
+	// stage is how far the task got (DESIGN.md §8.2); see staged.
+	stage api.FailureStage
 }
 
 func (e *taskError) Error() string {
@@ -36,6 +38,22 @@ func (e *taskError) Unwrap() error { return e.err }
 // retryableErr wraps err as a retryable task failure.
 func retryableErr(reason string, err error) *taskError {
 	return &taskError{reason: reason, retryable: true, err: err}
+}
+
+// preWork is a failure before the worker touched the task's input: a
+// problem with the worker's own configuration.
+func preWork(reason string, err error) *taskError {
+	return &taskError{reason: reason, retryable: true, err: err, stage: api.StagePreWork}
+}
+
+// staged sets the stage of a task failure that has none yet. Other errors
+// (cancellation, lease loss) pass through unchanged.
+func staged(stage api.FailureStage, err error) error {
+	var te *taskError
+	if errors.As(err, &te) && te.stage == "" {
+		te.stage = stage
+	}
+	return err
 }
 
 // taskStats describe a successful task for logs and metrics.
@@ -103,7 +121,7 @@ func (w *Worker) handleLease(runCtx, workCtx context.Context, l *api.Lease) {
 func (w *Worker) execute(ctx context.Context, l *api.Lease, run *leaseRun, log zerolog.Logger) (taskStats, error) {
 	dir, err := w.leaseDir(l.ID)
 	if err != nil {
-		return taskStats{}, retryableErr("creating work directory", err)
+		return taskStats{}, preWork("creating work directory", err)
 	}
 	w.disk.invalidate()
 	defer func() {
@@ -111,7 +129,7 @@ func (w *Worker) execute(ctx context.Context, l *api.Lease, run *leaseRun, log z
 		w.disk.invalidate()
 	}()
 	if err := w.giveToChild(dir); err != nil {
-		return taskStats{}, retryableErr("preparing work directory", err)
+		return taskStats{}, preWork("preparing work directory", err)
 	}
 	switch l.Kind {
 	case api.KindPrepare:
@@ -119,7 +137,17 @@ func (w *Worker) execute(ctx context.Context, l *api.Lease, run *leaseRun, log z
 	case api.KindTranscribe:
 		return w.transcribe(ctx, l, dir, run, log)
 	}
-	return taskStats{}, &taskError{reason: fmt.Sprintf("unknown task kind %q", l.Kind), retryable: true}
+	return taskStats{}, preWork(fmt.Sprintf("unknown task kind %q", l.Kind), nil)
+}
+
+// checkInputURL refuses, before any work, a lease whose input_url the
+// client would not fetch (another origin): that is the worker's or the
+// server's configuration, not the task's fault.
+func (w *Worker) checkInputURL(l *api.Lease) error {
+	if err := w.api.CheckInputURL(l.ID, l.InputURL); err != nil {
+		return preWork("refusing the lease's input_url", err)
+	}
+	return nil
 }
 
 var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
@@ -177,9 +205,10 @@ func (w *Worker) reportFailure(workCtx context.Context, log zerolog.Logger, l *a
 	if !errors.As(err, &te) {
 		te = retryableErr("worker error", err)
 	}
-	rep := api.FailureReport{Reason: te.Error(), StderrTail: obs.StderrTail(te.stderr), Retryable: te.retryable}
+	rep := api.FailureReport{Reason: te.Error(), StderrTail: obs.StderrTail(te.stderr), Retryable: te.retryable,
+		Stage: te.stage}
 	ev := obs.Warn(&log, obs.EventTaskFailed).Str(obs.FieldOutcome, string(api.OutcomeFailed)).
-		Str(obs.FieldError, rep.Reason).Bool("retryable", rep.Retryable)
+		Str(obs.FieldError, rep.Reason).Bool("retryable", rep.Retryable).Str("stage", string(rep.Stage))
 	if rep.StderrTail != "" {
 		ev = ev.Str(obs.FieldStderrTail, rep.StderrTail)
 	}

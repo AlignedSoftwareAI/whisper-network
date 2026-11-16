@@ -114,6 +114,7 @@ func TestOversizedInputIsRefused(t *testing.T) {
 			h.activate()
 			h.eventually(func() bool { return len(h.srv.Task(task).Failures) > 0 }, "no failure reported")
 			assert.Contains(t, h.srv.Task(task).Failures[0].Reason, "input larger than the lease allows")
+			assert.Equal(t, api.StageInput, h.srv.Task(task).Failures[0].Stage)
 			assert.Zero(t, h.srv.ResultUploads())
 		})
 	}
@@ -138,6 +139,7 @@ func TestLeaseWithoutSizeIsRefused(t *testing.T) {
 			f := h.srv.Task(task).Failures[0]
 			assert.Contains(t, f.Reason, c.reason)
 			assert.False(t, f.Retryable)
+			assert.Equal(t, api.StageInput, f.Stage)
 			assert.Zero(t, h.srv.ResultUploads())
 		})
 	}

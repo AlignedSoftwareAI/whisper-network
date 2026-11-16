@@ -47,9 +47,19 @@ func (s *Server) reapOnce(ctx context.Context) {
 		obs.Warn(&s.log, obs.EventTaskFailed).Str(obs.FieldJobID, st.JobID).Int(obs.FieldTaskSeq, st.Seq).
 			Str(obs.FieldTaskKind, string(st.Kind)).Strs("failed_on", st.Workers).Bool("retryable", false).
 			Str(obs.FieldError, st.Reason).Msg("task failed: no other eligible worker took it")
-		s.jobFinished(ctx, st.JobID)
+		if st.JobFailed {
+			s.jobFinished(ctx, st.JobID)
+		}
 	}
 	counts["tasks_stranded"] = len(stranded)
+
+	// Lease ends settle a failing job themselves; this is the backstop.
+	settled, err := s.st.SettleFailingJobs(ctx)
+	fail("settle failing jobs", err)
+	for _, id := range settled {
+		s.jobFinished(ctx, id)
+	}
+	counts["jobs_failed"] = len(settled)
 
 	ids, err := s.st.JobsAwaitingAssembly(ctx)
 	fail("jobs awaiting assembly", err)

@@ -192,7 +192,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, p *Prin
 const maxReasonLen = 1000
 
 // handleFailure ends a lease as failed; the task requeues for another worker
-// if retryable and attempts remain, otherwise the job fails.
+// if retryable and attempts remain, otherwise the task fails for good and
+// the job fails once its other live leases end. A pre-work failure requeues
+// without counting an attempt (DESIGN.md §8.2). An unknown stage is
+// treated as none, so a newer worker's report still works.
 func (s *Server) handleFailure(w http.ResponseWriter, r *http.Request, p *Principal) error {
 	var rep api.FailureReport
 	if err := decodeWorkerJSON(w, r, &rep, false, 64<<10); err != nil {
@@ -205,13 +208,18 @@ func (s *Server) handleFailure(w http.ResponseWriter, r *http.Request, p *Princi
 	if len(reason) > maxReasonLen {
 		reason = strings.ToValidUTF8(reason[:maxReasonLen], "")
 	}
-	end, err := s.st.Fail(r.Context(), r.PathValue("id"), p.ID, reason, rep.Retryable)
+	stage := rep.Stage
+	if !stage.Valid() {
+		stage = ""
+	}
+	end, err := s.st.FailStage(r.Context(), r.PathValue("id"), p.ID, reason, rep.Retryable, stage)
 	if err != nil {
 		return err
 	}
 	obs.Warn(&s.log, obs.EventTaskFailed).Str(obs.FieldLeaseID, end.LeaseID).Str(obs.FieldJobID, end.JobID).
 		Int(obs.FieldTaskSeq, end.Seq).Str(obs.FieldTaskKind, string(end.Kind)).Str(obs.FieldWorkerID, p.ID).
-		Int(obs.FieldAttempt, end.Attempt).Bool("retryable", rep.Retryable).Str(obs.FieldError, reason).
+		Int(obs.FieldAttempt, end.Attempt).Bool("retryable", rep.Retryable).Str("stage", string(stage)).
+		Str(obs.FieldError, reason).
 		Str(obs.FieldStderrTail, obs.StderrTail(rep.StderrTail)).Msg("task failed")
 	s.leaseEnded(r.Context(), end)
 	w.WriteHeader(http.StatusNoContent)

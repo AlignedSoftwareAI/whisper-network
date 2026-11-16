@@ -266,6 +266,7 @@ func TestChildFailureIsReportedWithStderr(t *testing.T) {
 	require.Len(t, f, 2, "retryable failure is retried up to max attempts")
 	assert.True(t, f[0].Retryable)
 	assert.Contains(t, f[0].Reason, "whisper-cli failed (exit status 3)")
+	assert.Equal(t, api.StageChild, f[0].Stage)
 	assert.Contains(t, f[0].StderrTail, "simulated crash")
 	logs := h.logs.Bytes()
 	obstest.AssertClean(t, logs)
@@ -284,6 +285,7 @@ func TestUndecodableMediaIsNotRetryable(t *testing.T) {
 	f := h.srv.Task(task).Failures
 	require.Len(t, f, 1)
 	assert.False(t, f[0].Retryable)
+	assert.Equal(t, api.StageChild, f[0].Stage)
 	assert.Contains(t, f[0].StderrTail, "Invalid data found when processing input")
 }
 
@@ -315,6 +317,25 @@ func TestChildTimeout(t *testing.T) {
 	assert.Contains(t, f.Reason, "whisper-cli timed out")
 }
 
+// An input_url on another origin is refused before any work: the
+// worker's or server's configuration is at fault, not the task (#64).
+func TestForeignInputURLIsPreWork(t *testing.T) {
+	for _, kind := range []api.TaskKind{api.KindPrepare, api.KindTranscribe} {
+		t.Run(string(kind), func(t *testing.T) {
+			h := newHarness(t)
+			task := h.srv.AddTask(workertest.Task{Kind: kind, Input: workertest.WAV(1), Model: "tiny.test",
+				InputURL: "https://elsewhere.invalid/input"})
+			_, _ = h.run()
+			h.activate()
+			h.eventually(func() bool { return len(h.srv.Task(task).Failures) > 0 }, "no failure")
+			f := h.srv.Task(task).Failures[0]
+			assert.Equal(t, api.StagePreWork, f.Stage)
+			assert.True(t, f.Retryable)
+			assert.Contains(t, f.Reason, "input_url")
+		})
+	}
+}
+
 func TestModelHashMismatchFailsTask(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddModel("tiny.test", []byte("tampered"))
@@ -325,6 +346,7 @@ func TestModelHashMismatchFailsTask(t *testing.T) {
 	f := h.srv.Task(task).Failures[0]
 	assert.True(t, f.Retryable)
 	assert.Contains(t, f.Reason, "server pins sha256")
+	assert.Equal(t, api.StagePreWork, f.Stage, "the worker's model table, not the task")
 	_, err := os.Stat(filepath.Join(h.cfg.StateDir, "models", "ggml-tiny.test.bin"))
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }

@@ -16,6 +16,8 @@ import (
 // last completed task, kept per job in worker_failure_streak:
 //   - a non-retryable failure is the input's fault (ffmpeg rejected the
 //     upload, say), not the worker's, so it neither counts nor resets;
+//   - a pre-work failure (api.StagePreWork) is the worker's own, so it
+//     counts even if not retryable;
 //   - a release or a cancellation is nobody's fault and does neither;
 //   - a completed task (CompleteTranscribe, AcceptPrepare) ends the streak,
 //     and so does making the worker active (resume, approval).
@@ -24,7 +26,8 @@ import (
 // across at least two jobs, the transaction that ended the lease also pauses
 // the worker, records why, and appends the worker.pause audit entry with
 // actor "system". Two jobs, so that one poisoned input that crashes every
-// worker it meets cannot take a healthy worker out of service. A paused
+// worker it meets cannot take a healthy worker out of service; the rule is
+// waived when the failure that reaches the limit is a pre-work one. A paused
 // worker keeps its current leases (they may still finish) and claims nothing
 // new until an administrator resumes it.
 
@@ -41,8 +44,13 @@ type AutoPause struct {
 // trackFailureStreak counts a lease end in its worker's failure streak and
 // pauses the worker if that trips the breaker, returning what it paused (nil
 // if nothing).
+//
+// preWork marks a failure the worker reported before work started
+// (api.StagePreWork). It cannot be the input's fault, so it trips the
+// breaker without the two-jobs rule: a misconfigured worker that fails every
+// lease at once is paused even when only one job is queued.
 func (s *Store) trackFailureStreak(ctx context.Context, tx *sql.Tx, l leaseRow, outcome api.LeaseOutcome,
-	retryable bool, now time.Time) (*AutoPause, error) {
+	retryable, preWork bool, now time.Time) (*AutoPause, error) {
 	if outcome != api.OutcomeExpired && (outcome != api.OutcomeFailed || !retryable) {
 		return nil, nil
 	}
@@ -67,11 +75,14 @@ func (s *Store) trackFailureStreak(ctx context.Context, tx *sql.Tx, l leaseRow, 
 	if err != nil {
 		return nil, fmt.Errorf("failure streak: %w", err)
 	}
-	if state != api.WorkerActive || failures < limit || jobs < 2 {
+	if state != api.WorkerActive || failures < limit || jobs < 2 && !preWork {
 		return nil, nil
 	}
 	p := &AutoPause{WorkerID: l.WorkerID, Failures: failures, Jobs: jobs,
 		Reason: fmt.Sprintf("%d consecutive failures across %d jobs", failures, jobs)}
+	if jobs == 1 {
+		p.Reason = fmt.Sprintf("%d consecutive failures in 1 job, the last before work started", failures)
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE workers SET state = 'paused', decided_by = ?, decided_at = ?,
 		pause_reason = ? WHERE id = ?`, SystemActor, toMS(now), p.Reason, l.WorkerID); err != nil {
 		return nil, fmt.Errorf("auto-pause worker: %w", err)

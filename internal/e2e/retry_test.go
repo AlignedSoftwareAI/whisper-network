@@ -59,7 +59,7 @@ func TestRetryWaitLimit(t *testing.T) {
 	reaped := e.WaitEvent(obs.EventTaskFailed, func(m map[string]any) bool { return m["failed_on"] != nil })
 	assert.Equal(t, job.ID, reaped[obs.FieldJobID])
 	assert.Equal(t, []any{w.ID()}, reaped["failed_on"])
-	assert.Equal(t, *failed.Error, reaped[obs.FieldError])
+	assert.Equal(t, *failed.Error, reaped[obs.FieldError].(string)+"; 0 of 1 tasks done, 0 cancelled")
 
 	// The wait runs from the end of the attempt (crash report or expiry).
 	var ended time.Time

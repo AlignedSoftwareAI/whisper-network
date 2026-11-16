@@ -82,6 +82,8 @@ type Task struct {
 	LeaseInputBytes, LeaseAudioSamples int64
 	// OmitSize leaves input_bytes and audio_samples out of the lease.
 	OmitSize bool
+	// InputURL, if set, replaces the lease's input_url.
+	InputURL string
 
 	State    api.TaskState
 	Attempts int
@@ -472,6 +474,9 @@ func (s *Server) leaseLocked(t *Task, wk *Worker) api.Lease {
 	l := api.Lease{ID: id, Kind: t.Kind, Job: strings.Split(t.ID, "/")[0], Seq: 1,
 		InputURL: "/lease/" + id + "/input", HeartbeatIntervalS: s.HeartbeatIntervalS,
 		ExpiresAt: time.Now().Add(3 * time.Duration(s.HeartbeatIntervalS) * time.Second).UTC()}
+	if t.InputURL != "" {
+		l.InputURL = t.InputURL
+	}
 	switch t.Kind {
 	case api.KindPrepare:
 		l.Seq = 0

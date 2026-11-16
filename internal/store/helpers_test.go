@@ -145,7 +145,7 @@ func (f *fixture) complete(l *Lease) bool {
 	done, err := f.s.CompleteTranscribe(f.ctx, l.ID, l.WorkerID, TranscribeCompletion{
 		Result: []byte(`{"segments":[]}`), EngineVersion: "whisper.cpp 1.9.5", ComputeMS: 1000})
 	require.NoError(f.t, err)
-	return done
+	return done.JobComplete
 }
 
 // task returns (state, attempts) of a task.

@@ -142,6 +142,13 @@ func (c *Client) OpenInput(ctx context.Context, leaseID, inputURL string, offset
 	return c.open(ctx, u, offset)
 }
 
+// CheckInputURL reports whether DownloadInput would fetch a lease's
+// input_url: an absolute URL must be on the server's origin.
+func (c *Client) CheckInputURL(leaseID, inputURL string) error {
+	_, err := c.inputURL(leaseID, inputURL)
+	return err
+}
+
 func (c *Client) inputURL(leaseID, ref string) (*url.URL, error) {
 	if ref == "" {
 		return c.endpoint("lease", leaseID, "input"), nil

@@ -43,7 +43,7 @@ func TestRetryElsewhere(t *testing.T) {
 	j := h.job(job.ID)
 	require.Equal(t, api.JobFailed, j.State)
 	require.NotNil(t, j.Error)
-	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+aID+", "+bID+"): out of memory", *j.Error)
+	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+aID+", "+bID+"): out of memory; 0 of 1 tasks done, 0 cancelled", *j.Error)
 }
 
 // TestRetryWaitLimit: with A the only eligible worker, the task it failed
@@ -71,7 +71,7 @@ func TestRetryWaitLimit(t *testing.T) {
 	require.NotNil(t, j.Error)
 	want := "transcribe task 1 failed after 1 attempt(s) (on worker " + aID +
 		"); no other eligible worker took it within 1h: flaky disk"
-	assert.Equal(t, want, *j.Error)
+	assert.Equal(t, want+"; 0 of 1 tasks done, 0 cancelled", *j.Error)
 
 	failed := h.logs.events(t, obs.EventTaskFailed)
 	require.Len(t, failed, 2)

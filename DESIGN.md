@@ -141,9 +141,9 @@ Trade-off: the worker image ships three binaries (`whisper-network`, `whisper-cl
 - **paused**: running leases continue to completion. New claims return 409 `paused`. The worker keeps polling slowly so it notices when it is resumed. An administrator pauses a worker, or the circuit breaker does (below).
 - **rejected**: the token is revoked and active leases are cancelled; the next heartbeat returns 410, and the worker kills its child and exits non-zero. Terminal. A new registration is a new worker.
 
-**Circuit breaker (auto-pause).** A bad worker (a broken build or model, a failing disk, too little memory) must not keep failing jobs, so the server takes it out of service by itself. Each worker has a **failure streak**: its leases that ended `failed` with `retryable` set, or `expired`, since its last completed task. A non-retryable failure is the input's fault (ffmpeg rejecting an upload as invalid data), not the worker's, so it neither counts nor resets the streak; releases and cancellations do neither either. A completed task (a transcribe result or an accepted prepare) ends the streak.
+**Circuit breaker (auto-pause).** A bad worker (a broken build or model, a failing disk, too little memory) must not keep failing jobs, so the server takes it out of service by itself. Each worker has a **failure streak**: its leases that ended `failed` with `retryable` set, or `expired`, since its last completed task. A non-retryable failure is the input's fault (ffmpeg rejecting an upload as invalid data), not the worker's, so it neither counts nor resets the streak; releases and cancellations do neither either. A **pre-work** failure (below) is always the worker's own and counts, retryable or not. A completed task (a transcribe result or an accepted prepare) ends the streak.
 
-When an **active** worker's streak reaches `--worker-failure-limit` (default 3) failures **spanning at least two distinct jobs**, the transaction that ended the lease also moves the worker to `paused`, with `decided_by = system` and a stored reason such as `3 consecutive failures across 2 jobs`, and appends the `worker.pause` audit entry (actor `system`, the reason in its detail, §5.2.1). The two-job rule means one poisoned input that crashes every worker it meets cannot take a healthy worker out of service. The server then logs `worker.auto_paused` and counts `whisper_worker_auto_paused_total` (§10). The paused worker finishes its current leases (they still count in the streak but cannot pause it again) and claims nothing new; the Workers page shows it as auto-paused with the reason. Resuming it (an administrator's decision, since the cause is usually on the machine) clears the reason and the streak. `--worker-failure-limit 0` turns the breaker off; the streak is still kept and shown.
+When an **active** worker's streak reaches `--worker-failure-limit` (default 3) failures **spanning at least two distinct jobs**, the transaction that ended the lease also moves the worker to `paused`, with `decided_by = system` and a stored reason such as `3 consecutive failures across 2 jobs`, and appends the `worker.pause` audit entry (actor `system`, the reason in its detail, §5.2.1). The two-job rule means one poisoned input that crashes every worker it meets cannot take a healthy worker out of service. It is waived when the failure that reaches the limit is a pre-work one, which cannot be the input's fault: a misconfigured worker is paused even while only one job is queued (reason e.g. `3 consecutive failures in 1 job, the last before work started`). The server then logs `worker.auto_paused` and counts `whisper_worker_auto_paused_total` (§10). The paused worker finishes its current leases (they still count in the streak but cannot pause it again) and claims nothing new; the Workers page shows it as auto-paused with the reason. Resuming it (an administrator's decision, since the cause is usually on the machine) clears the reason and the streak. `--worker-failure-limit 0` turns the breaker off; the streak is still kept and shown.
 
 The breaker complements **retry elsewhere** (below): retry elsewhere moves a failed task to another worker, and the breaker stops the failing worker from taking further tasks in the meantime. The streak lives in `worker_failure_streak`, one row per (worker, job) with the failures in that job, so deleting a job drops its share.
 
@@ -152,9 +152,19 @@ The breaker complements **retry elsewhere** (below): retry elsewhere moves a fai
 ```
  preparing ──▶ queued ──▶ running ──▶ done
      │            │          │
-     └────────────┴──────────┴──▶ failed     (a task failed: attempts exhausted, input failure, or retry wait limit; sibling tasks cancelled)
+     └────────────┴──────────┴──▶ failed     (a task failed for good, and no lease of the job is live any more)
  any state ──DELETE──▶ (row and blobs removed; active leases cancelled)
 ```
+
+**Failing jobs: one bad task does not throw away the rest.** A task *fails for good* when it runs out of attempts, fails non-retryably, or waits out the retry wait limit. Its job can then no longer be done, but the work already running for it is kept:
+
+- The job's `pending` tasks become `cancelled` at once, so no new lease is issued for the job.
+- Its `leased` tasks run to completion on their workers: heartbeats still work, and a result is stored as usual (`done`). If such a lease ends without a result (failed, expired, released, or cancelled by worker rejection or grant revocation), its task becomes `cancelled` instead of requeuing.
+- The job keeps its state (`running`, or `preparing`) and gets its `error` at once, named after the first task that failed for good; a client polling it sees the error early. It becomes `failed` in the transaction that ends its last live lease (a result, failure, release, cancellation, or the reaper's expiry); a reaper sweep is the backstop. A job with no other live lease fails at once, as before.
+- Deleting the job, or revoking a worker's access, still cancels leases immediately.
+- A failed job's `error` ends with its progress, `…; 2 of 12 tasks done, 4 cancelled` (transcribe tasks; omitted for a job that failed preparing), and `tasks` counts `done`, `failed` and `cancelled` accurately, so a client can tell what a retry (#56) would save. The `done` tasks' results stay in the database until job retention.
+
+`FailJob` (used when assembly fails) still fails a job outright, cancelling its leases.
 
 `preparing` is skipped when the upload is already canonical. Transcribe tasks are created when the canonical audio is accepted.
 
@@ -163,19 +173,22 @@ The breaker complements **retry elsewhere** (below): retry elsewhere moves a fai
 ```
  pending ──claim──▶ leased ──result──▶ done
     ▲                 │
-    └── expired/released/failed (attempts < max) ──┘
+    └── expired/released/failed (attempts < max), or failed pre-work ──┘
                       ├── failed (attempts == max, or not retryable) ──▶ failed
+                      ├── lease ends without a result while the job is failing ──▶ cancelled
  pending ──waited retry_wait_limit after failing (reaper, §8.2)──▶ failed
+ pending ──a sibling failed for good (the job is failing)──▶ cancelled
 ```
 
 **A bad worker must never cause a failed job.** A failure is often the worker's fault (a broken model file or build, too little memory, a flaky disk), so a task is never retried on a worker that already failed it, and its attempts count workers, not leases:
 
-- **Attempts count distinct workers.** `attempts` is the number of distinct workers on which the task failed or whose lease on it expired, plus one while it is leased. The default `max_attempts` is 2: a task that failed on two different workers is abandoned rather than retried forever. A failure and an expiry on the same worker count once. A lease the worker releases voluntarily (shutdown, drain), or one cancelled by the server (worker rejected, grant revoked), does **not** count.
+- **Attempts count distinct workers.** `attempts` is the number of distinct workers on which the task failed or whose lease on it expired, plus one while it is leased. The default `max_attempts` is 2: a task that failed on two different workers is abandoned rather than retried forever. A failure and an expiry on the same worker count once. A lease the worker releases voluntarily (shutdown, drain), one cancelled by the server (worker rejected, grant revoked), or a pre-work failure does **not** count.
 - **Retry elsewhere.** A worker never leases a task again after failing it or letting its lease on it expire (§8.2). A released lease does not exclude its worker.
 - **Input failures fail at once.** A failure the worker attributes to the input (`retryable: false`, e.g. ffmpeg's "Invalid data found when processing input") fails the job immediately: another worker would fail the same way.
 - **Wait limit.** A task that failed and has since waited `--retry-wait-limit` (default 24 h) without any other eligible worker taking it fails its job (§8.2).
+- **Pre-work failures are refunded.** A failure report carries a `stage`: `pre-work` (before the worker fetched the input or started a child: a missing tool, a model not in its table or failing to download, an `input_url` on another origin, its work directory), `input` (downloading or checking the input) or `child` (running ffmpeg or whisper-cli, reading their output, uploading the result). A `pre-work` failure says nothing about the task, so the task requeues without counting an attempt and without excluding the worker, retryable or not; it counts toward the worker's failure streak, so the circuit breaker pauses a misconfigured worker instead of letting it fail anyone's job. The lease records the stage (`leases.stage`). Reports without a stage (older workers), or with one the server does not know, behave as before; so does every stage when the breaker is off (`--worker-failure-limit 0`), since nothing would then stop a worker from taking and failing the same task forever.
 
-When a job fails, its error names the workers its task failed on, e.g. `transcribe task 1 failed after 2 attempt(s) (on workers A, B): out of memory`, or `transcribe task 1 failed after 1 attempt(s) (on worker A); no other eligible worker took it within 24h: out of memory`.
+When a job fails, its error names the workers its task failed on and the job's progress, e.g. `transcribe task 6 failed after 2 attempt(s) (on workers A, B): out of memory; 2 of 12 tasks done, 4 cancelled`, or `transcribe task 1 failed after 1 attempt(s) (on worker A); no other eligible worker took it within 24h: out of memory; 0 of 1 tasks done, 0 cancelled`.
 
 ### 4.3 Schema (SQLite)
 
@@ -255,6 +268,7 @@ CREATE TABLE leases (
   worker_id TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   ended_at INTEGER, outcome TEXT,             -- done | expired | released | failed | cancelled
   heartbeat_at INTEGER,                       -- latest heartbeat, NULL until the first (UI only)
+  stage TEXT,                                 -- failed only: pre-work | input | child, as reported (§4.2)
   FOREIGN KEY (job_id, seq) REFERENCES tasks ON DELETE CASCADE);
 CREATE INDEX leases_live ON leases (expires_at) WHERE ended_at IS NULL;
 CREATE INDEX leases_task_failures ON leases (job_id, seq, worker_id, ended_at)  -- retry elsewhere (§8.2)
@@ -290,7 +304,7 @@ Notes:
 - Timestamps are Unix milliseconds in UTC.
 - Migrations are embedded (`embed.FS`), applied on start, and versioned with `PRAGMA user_version`.
 - Invariant: at most one live lease per task (`ended_at IS NULL`). The claim transaction enforces it, and a test pins it (§11).
-- **Worker counters** (`worker_stats`) are updated in the transaction that ends a lease, so they always agree with task outcomes. A completion (transcribe result or accepted prepare) counts its task by kind, its compute time, its audio (transcribe only, so prepare time does not skew the realtime factor) and its job, if no other task of that job is already done by the worker. That check needs no extra table: a done task never changes state or worker again and goes only with its job, so each (worker, job) pair counts once. `failed` and `expired` leases count as failures and expiries; a release or a cancellation (worker rejected, sibling task failed the job) counts as nothing. They are durable and built in; the Prometheus metrics (§10.2) stay for time series. `GET /admin/workers` returns them as `stats`; the workers table summarises them (tasks done, audio hours, average realtime factor, failure rate) and each worker's page shows them in full.
+- **Worker counters** (`worker_stats`) are updated in the transaction that ends a lease, so they always agree with task outcomes. A completion (transcribe result or accepted prepare) counts its task by kind, its compute time, its audio (transcribe only, so prepare time does not skew the realtime factor) and its job, if no other task of that job is already done by the worker. That check needs no extra table: a done task never changes state or worker again and goes only with its job, so each (worker, job) pair counts once. `failed` and `expired` leases count as failures and expiries (pre-work failures included); a release or a cancellation (worker rejected, grant revoked, job deleted) counts as nothing. They are durable and built in; the Prometheus metrics (§10.2) stay for time series. `GET /admin/workers` returns them as `stats`; the workers table summarises them (tasks done, audio hours, average realtime factor, failure rate) and each worker's page shows them in full.
 - **Counter backfill.** The migration that added the counters filled them from what was then retained: completions from done tasks (kept as long as their job, `job_retention`), timed by their done lease if it was still kept, else by their job's completion; failures and expiries from ended leases (kept 30 days). Older history is not counted.
 
 ---
@@ -452,7 +466,7 @@ Model choice stays with the client. The rule "`en` → `small.en`, anything else
 | `GET /lease/{id}/input` | Prepare: the original bytes. Transcribe: a WAV stream (16 kHz mono s16) decoded from the canonical FLAC for this task's sample range. `Range` is supported for prepare; transcribe input is regenerated on retry. | lease holder, live lease |
 | `POST /lease/{id}/heartbeat` | Extend the lease. Optional body: worker gauges (§10.2). Returns `200 {expires_at}`, or `410` if expired, cancelled or the job was deleted, or if the lease may not be extended any more: the worker is neither active nor paused, no longer holds `process` on the lease's queue, or the lease is past its maximum age (§8.3). The worker must then kill the child. | lease holder |
 | `PUT /lease/{id}/result` | Prepare: body is the canonical FLAC (`audio/flac`). Transcribe: segments JSON. Idempotent for the same lease. `410` if the lease is no longer live; `422` if validation fails (counts as a failed attempt). | lease holder |
-| `POST /lease/{id}/failure` | `{"reason":"…","stderr_tail":"…","retryable":true}`. Ends the lease; the task requeues for another worker if attempts remain and `retryable` (§8.2). | lease holder |
+| `POST /lease/{id}/failure` | `{"reason":"…","stderr_tail":"…","retryable":true,"stage":"child"}`. Ends the lease; the task requeues for another worker if attempts remain and `retryable` (§8.2). `stage` (optional: `pre-work`, `input`, `child`) says how far the worker got; a `pre-work` failure requeues without using an attempt or excluding the worker (§4.2). | lease holder |
 | `DELETE /lease/{id}` | Voluntary release on graceful shutdown. Does not consume an attempt. | lease holder |
 | `GET /models/{name}` | Model file (ggml), sha256 in `ETag`. The server keeps a cache, filled from upstream on first request and pinned by hash. | any active worker |
 
@@ -668,19 +682,19 @@ Each queue has a virtual time `V_q`, and each (queue, class) pair has `V_qc`. On
 
 **Retry elsewhere (anti-affinity)**
 
-A task the claiming worker failed, or whose lease expired on it, is never eligible for that worker again. Released and cancelled leases do not count. The condition is part of the eligibility fragment, so it applies to the candidate query and to the pick inside the chosen (q, c) alike:
+A task the claiming worker failed, or whose lease expired on it, is never eligible for that worker again. Released and cancelled leases, and pre-work failures (§4.2), do not count. The condition is part of the eligibility fragment, so it applies to the candidate query and to the pick inside the chosen (q, c) alike:
 
 ```sql
 AND NOT (t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x
   WHERE x.job_id = t.job_id AND x.seq = t.seq AND x.worker_id = :worker
-    AND x.outcome IN ('failed','expired')))
+    AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work'))
 ```
 
 `t.attempts > 0` skips the lookup for tasks that never failed (a pending task's attempts are the number of workers it failed on), and a partial index on failed and expired leases (`job_id, seq, worker_id, ended_at`) serves the rest.
 
-- **Attempts.** When a lease ends, the task's `attempts` is recomputed as the number of distinct workers among its failed and expired leases (§4.2). The task fails once that reaches `--max-attempts`, so every attempt it gets runs on a different worker. Because a worker never gets the task back, a repeat on one worker cannot normally happen; counting distinct workers also covers a failure and an expiry recorded for the same worker (e.g. leases from a server version without this rule).
+- **Attempts.** When a lease ends, the task's `attempts` is recomputed as the number of distinct workers among its failed (not pre-work) and expired leases (§4.2). The task fails once that reaches `--max-attempts`, so every attempt it gets runs on a different worker. Because a worker never gets the task back, a repeat on one worker cannot normally happen; counting distinct workers also covers a failure and an expiry recorded for the same worker (e.g. leases from a server version without this rule).
 - **Fairness.** An excluded task is invisible to this worker's claim: a (q, c) whose only pending tasks are excluded is not a candidate, so the worker is served from its other candidates instead of getting nothing, and nothing is charged for the skipped task. The retry is charged to its queue when another worker takes it.
-- **Only one eligible worker: the wait limit.** Exclusion is permanent, so a task whose every eligible worker has failed it would wait forever. The reaper (§8.5) fails such a task, and its job, once it has been pending for `--retry-wait-limit` (default 24 h) since it last went back to pending, with no worker having taken it since. The error names the workers that failed it and says no other eligible worker took it within the limit. Whether another worker is eligible is not knowable at claim time (it depends on which workers happen to be connected, busy or paused), so the rule is a wait, not a check: a worker that comes online or is approved within the limit still takes the retry. A worker that takes the task and releases it (shutdown, drain) restarts the wait; one that fails it adds itself to the excluded workers. A task that never failed is not affected: queued work waits as long as it needs.
+- **Only one eligible worker: the wait limit.** Exclusion is permanent, so a task whose every eligible worker has failed it would wait forever. The reaper (§8.5) fails such a task for good, making its job failing (§4.2), once it has been pending for `--retry-wait-limit` (default 24 h) since it last went back to pending, with no worker having taken it since. The error names the workers that failed it and says no other eligible worker took it within the limit. Whether another worker is eligible is not knowable at claim time (it depends on which workers happen to be connected, busy or paused), so the rule is a wait, not a check: a worker that comes online or is approved within the limit still takes the retry. A worker that takes the task and releases it (shutdown, drain) restarts the wait; one that fails it adds itself to the excluded workers. A task that never failed is not affected: queued work waits as long as it needs.
 - **Retention.** The reaper's ended-lease pruning (§8.5) keeps the leases of a task that is still pending or leased, whatever their age: they decide who may take it and how many attempts it has left.
 - **Why not "retry on the same worker after a grace".** An earlier version let the failing worker retry after a grace period. On a small fleet that turned a broken worker into a failed job: it burned the task's last attempt on the same machine. A failed job is worse than a late one, so the rule became strict, with the wait limit as the bound.
 - **Visibility.** A failed job's error names the workers its task failed or expired on (§4.2). `Store.RetryExclusion` reports why a pending task is excluded for a given worker (for queue views).
@@ -697,7 +711,7 @@ Confidence: high that this gives the fairness asked for. Medium on the default p
 ### 8.3 Lease timing
 
 - `heartbeat_interval` = 30 s, and `lease_ttl` = 3 × interval = 90 s. A worker is presumed gone after 3 missed heartbeats. Both values are server config and are sent to the worker in each lease.
-- The reaper runs every 10 s. It expires leases with `expires_at < now` (outcome `expired`) and requeues the task for another worker, or fails it when attempts are exhausted. It then fails tasks that have waited `--retry-wait-limit` for a worker that has not already failed them (§8.2).
+- The reaper runs every 10 s. It expires leases with `expires_at < now` (outcome `expired`) and requeues the task for another worker, or fails it when attempts are exhausted; in a failing job (§4.2) the task is cancelled instead, and the expiry of the job's last live lease fails the job. It then fails tasks that have waited `--retry-wait-limit` for a worker that has not already failed them (§8.2), and fails any failing job left with no live lease (a backstop: lease ends do this themselves).
 - **Maximum lease age.** Heartbeats cannot keep a lease alive forever: once a lease is older than max(`--max-lease-age`, `--lease-age-factor` × the task's cost in seconds) (defaults 6 h and 4; cost is audio seconds × model factor, §8.2), heartbeats get `410` and the lease expires, counting as an attempt. This bounds a hung or misbehaving worker's hold on a task while leaving slow machines ample time.
 - **Server restart:** on startup, every live lease is extended by one `lease_ttl` before the reaper starts. Workers reconnecting within that window carry on uninterrupted.
 
