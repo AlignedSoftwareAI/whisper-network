@@ -58,24 +58,28 @@ Example:
 - `queued`: waiting for a worker
 - `running`: being transcribed (`tasks.done` / `tasks.total` shows progress for long recordings)
 - `done`: transcript ready
-- `failed`: see `error`, which ends with how many tasks were done and cancelled (also in `tasks`); retrying the same media is usually pointless. When one task fails for good, tasks already running finish first, so `error` can appear while the job is still `running`; treat that as failing.
+- `failed`: see `error`, which ends with how many tasks were done and cancelled (also in `tasks`). Do not upload the media again: if `retryable` is true, `POST /job/{id}/retry` (see below) re-runs only the unfinished part from the server's copy. When one task fails for good, tasks already running finish first, so `error` can appear while the job is still `running`; treat that as failing.
 
 Poll no more than once a minute; transcription runs at roughly real time or faster, so a one-hour recording typically takes tens of minutes once a worker picks it up. Never busy-loop. Do not block a conversation turn waiting: submit, record the job ID, and check back later.
 
-To check many jobs at once: `GET /queue/{queue}?since=<RFC3339 time>` lists jobs updated since then (optionally `&state=done`, `&limit=N`; follow `next_cursor` with `&cursor=...`). You see only jobs you created unless your token may view the whole queue.
+To check many jobs at once: `GET /queue/{queue}?since=<RFC3339 time>` lists jobs updated since then (optionally `&state=done`, `&limit=N`; follow `next_cursor` with `&cursor=...`). The default order is oldest first; `&sort=created&order=desc` is newest first and `&sort=state` puts running, then waiting, then failed, then done jobs first. You see only jobs you created unless your token may view the whole queue.
 
 ## Get the transcript
 
 - `GET /job/{id}/transcript`: plain text. The first line is a provenance header starting `# transcript-source: whisper;` (engine and model versions, the job ID, the source). Then one line per segment: `[mm:ss.ss] text` (minutes may exceed 59).
 - `GET /job/{id}/result`: the same as JSON: `{"job_id": ..., "provenance": ..., "segments": [{"start_ms": ..., "end_ms": ..., "text": ...}]}`.
 
-Both return `409` with problem type `not-done` until the job is `done`.
+Both return `409` with problem type `not-done` until the job is `done`. For a failed or unfinished job, add `?partial=1` to get what is transcribed so far: the provenance header ends with `; partial=true; missing=K/N` (K of N parts missing), each missing part is marked inline as `[... missing H:MM:SS-H:MM:SS (task N) ...]`, and the JSON has `"partial": true` and a `missing` list. Never present a partial transcript as complete.
+
+## Retry a failed job
+
+`POST /job/{id}/retry` (allowed for the job's creator) re-runs a `failed` job's unfinished tasks from the media the server kept; finished parts are kept. It returns `200` with the job document (state `queued` or `preparing`). It returns `409` with problem type `not-retryable` if the job is not failed or its media has been purged; the job document's `retryable` says which beforehand, and `media.kept_until` says how long a failed job's media is kept (about {{.FailedRetention}}, sooner if the server's disk fills).
 
 Whisper output is good but not perfect: names are often misspelled (the prompt helps), and occasionally a phrase repeats or a passage is dropped. Check against the audio before quoting someone.
 
 ## Clean up
 
-`DELETE /job/{id}` deletes the job, its media and its transcript (`204`). Do this once you have saved the transcript. Otherwise finished jobs are deleted automatically after {{.JobRetention}}; uploaded media is deleted {{.AudioRetention}} after the job finishes.
+`DELETE /job/{id}` deletes the job, its media and its transcript (`204`). Do this once you have saved the transcript. Otherwise finished jobs are deleted automatically after {{.JobRetention}}; uploaded media is deleted {{.AudioRetention}} after the job is done, or {{.FailedRetention}} after it failed.
 
 ## Errors worth handling
 
@@ -97,6 +101,8 @@ The `whisper-network` binary includes a client:
     whisper-network submit --server {{.BaseOrPlaceholder}} --model {{.ExampleModel}} --label "weekly meeting" meeting.mp4
     whisper-network status --server {{.BaseOrPlaceholder}} <job-id>
     whisper-network fetch  --server {{.BaseOrPlaceholder}} <job-id> -o meeting.txt
+    whisper-network fetch  --server {{.BaseOrPlaceholder}} --partial <job-id>    # a failed job's transcript so far
+    whisper-network retry  --server {{.BaseOrPlaceholder}} <job-id>
 
 ## More
 

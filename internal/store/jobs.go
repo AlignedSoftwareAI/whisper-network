@@ -85,7 +85,9 @@ type Job struct {
 	DownloadCount     int
 	FirstDownloadedAt *time.Time
 	LastDownloadedAt  *time.Time
-	Tasks             api.TaskCounts
+	// Retries counts how many times the failed job was retried.
+	Retries int
+	Tasks   api.TaskCounts
 }
 
 // Terminal reports whether the job is done or failed.
@@ -101,7 +103,9 @@ func (j *Job) API(now time.Time) api.Job {
 			OriginalBytes:  j.Original.Bytes,
 			OriginalType:   j.Original.Type,
 			OriginalPurged: j.OriginalPurgedAt != nil,
-			AudioPurged:    j.CanonicalPurgedAt != nil,
+			// The audio is gone once the canonical audio is purged, or, for
+			// a job that never got canonical audio, its original.
+			AudioPurged: j.CanonicalPurgedAt != nil || j.Canonical == nil && j.OriginalPurgedAt != nil,
 		},
 		Tasks:       j.Tasks,
 		CreatedAt:   j.CreatedAt,
@@ -109,6 +113,8 @@ func (j *Job) API(now time.Time) api.Job {
 		CompletedAt: j.CompletedAt,
 		ComputeS:    float64(j.ComputeMS) / 1000,
 		Downloads:   api.Downloads{Count: j.DownloadCount, First: j.FirstDownloadedAt, Last: j.LastDownloadedAt},
+		Retries:     j.Retries,
+		Retryable:   j.Retryable(),
 	}
 	if j.Canonical != nil {
 		out.Media.DurationS = float64(j.Canonical.Samples) / canonicalSampleRate
@@ -267,7 +273,7 @@ const jobSelect = `SELECT j.id, j.queue_id, q.name, j.client_id, COALESCE(j.idem
 	j.model, j.language, j.prompt, j.label, j.source, j.metadata, j.original_bytes, j.original_sha256,
 	j.original_type, j.original_purged_at, j.canonical_bytes, j.canonical_sha256, j.audio_samples,
 	j.canonical_purged_at, j.created_at, j.updated_at, j.started_at, j.completed_at, j.compute_ms,
-	COALESCE(j.error, ''), j.download_count, j.first_downloaded_at, j.last_downloaded_at,
+	COALESCE(j.error, ''), j.download_count, j.first_downloaded_at, j.last_downloaded_at, j.retries,
 	COUNT(t.seq), COALESCE(SUM(t.state = 'pending'), 0), COALESCE(SUM(t.state = 'leased'), 0),
 	COALESCE(SUM(t.state = 'done'), 0), COALESCE(SUM(t.state = 'failed'), 0),
 	COALESCE(SUM(t.state = 'cancelled'), 0), COALESCE(SUM(t.compute_ms), 0)
@@ -281,7 +287,7 @@ func scanJob(row interface{ Scan(...any) error }) (*Job, error) {
 	err := row.Scan(&j.ID, &j.QueueID, &j.QueueName, &j.ClientID, &j.IdempotencyKey, &j.State, &j.Weight,
 		&j.Model, &j.Language, &j.Prompt, &j.Label, &j.Source, &meta, &j.Original.Bytes, &j.Original.SHA256,
 		&j.Original.Type, &origPurged, &canonBytes, &canonSHA, &samples, &canonPurged, &created, &updated,
-		&started, &completed, &computeMS, &j.Error, &j.DownloadCount, &firstDL, &lastDL,
+		&started, &completed, &computeMS, &j.Error, &j.DownloadCount, &firstDL, &lastDL, &j.Retries,
 		&j.Tasks.Total, &j.Tasks.Pending, &j.Tasks.Leased, &j.Tasks.Done, &j.Tasks.Failed, &j.Tasks.Cancelled, &taskCompute)
 	if err != nil {
 		return nil, err
@@ -329,6 +335,51 @@ func (s *Store) JobByIdempotencyKey(ctx context.Context, clientID, key string) (
 	return j, nil
 }
 
+// JobSort is a job list order.
+type JobSort string
+
+// The job list orders (DESIGN.md §6.1).
+const (
+	// SortCreated orders by creation time, oldest first unless Desc (the
+	// default).
+	SortCreated JobSort = "created"
+	// SortState puts running jobs first, then queued and preparing (oldest
+	// first), then failed, then done (most recently finished first).
+	SortState JobSort = "state"
+)
+
+// Valid reports whether o is a known order ("" is SortCreated).
+func (o JobSort) Valid() bool { return o == "" || o == SortCreated || o == SortState }
+
+// jobStateRankSQL and jobStateKeySQL (over j = jobs) are the state order's
+// group and the time within the group. They must match the expressions of
+// the jobs_queue_state_order index (migration 0009) exactly.
+const (
+	jobStateRankSQL = `(CASE j.state WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'preparing' THEN 1 ` +
+		`WHEN 'failed' THEN 2 ELSE 3 END)`
+	jobStateKeySQL = `(CASE WHEN j.state IN ('failed','done') THEN -COALESCE(j.completed_at, j.created_at) ` +
+		`ELSE j.created_at END)`
+)
+
+// stateOrder returns a job's place in the state order, as jobStateRankSQL
+// and jobStateKeySQL compute it.
+func (j *Job) stateOrder() (rank, key int64) {
+	switch j.State {
+	case api.JobRunning:
+		return 0, toMS(j.CreatedAt)
+	case api.JobQueued, api.JobPreparing:
+		return 1, toMS(j.CreatedAt)
+	}
+	rank, t := int64(3), j.CreatedAt
+	if j.State == api.JobFailed {
+		rank = 2
+	}
+	if j.CompletedAt != nil {
+		t = *j.CompletedAt
+	}
+	return rank, -toMS(t)
+}
+
 // JobFilter selects jobs for ListJobs.
 type JobFilter struct {
 	QueueID int64
@@ -338,15 +389,25 @@ type JobFilter struct {
 	States   []api.JobState
 	// Since, when non-zero, keeps only jobs updated after it.
 	Since time.Time
+	// Sort is the order; "" is SortCreated.
+	Sort JobSort
+	// Desc reverses SortCreated (newest first). SortState ignores it.
+	Desc bool
 	// Limit defaults to 100 and is capped at 1000.
 	Limit int
-	// Cursor is the opaque next-page token from a previous call.
+	// Cursor is the opaque next-page token from a previous call with the
+	// same order; a cursor of another order is ErrInvalid.
 	Cursor string
 }
 
-// ListJobs lists jobs oldest first and returns the cursor for the next page
-// ("" when there is none).
+// ListJobs lists jobs in f's order and returns the cursor for the next page
+// ("" when there is none). Paging is by keyset, so it is stable under
+// inserts and deletes; under SortState a job that changes state between
+// two pages moves to its new group and may be listed twice or not at all.
 func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error) {
+	if !f.Sort.Valid() {
+		return nil, "", fmt.Errorf("%w: sort %q", ErrInvalid, f.Sort)
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -369,17 +430,36 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error
 		where = append(where, "j.updated_at > ?")
 		args = append(args, toMS(f.Since))
 	}
+	kind := cursorCreated
+	order := "j.created_at, j.id"
+	switch {
+	case f.Sort == SortState:
+		kind, order = cursorState, jobStateRankSQL+", "+jobStateKeySQL+", j.id"
+	case f.Desc:
+		kind, order = cursorCreatedDesc, "j.created_at DESC, j.id DESC"
+	}
 	if f.Cursor != "" {
-		ts, id, err := decodeCursor(f.Cursor)
+		c, err := decodeCursor(f.Cursor, kind)
 		if err != nil {
 			return nil, "", err
 		}
-		where = append(where, "(j.created_at > ? OR (j.created_at = ? AND j.id > ?))")
-		args = append(args, ts, ts, id)
+		switch kind {
+		case cursorCreated:
+			where = append(where, "(j.created_at, j.id) > (?, ?)")
+			args = append(args, c.key, c.id)
+		case cursorCreatedDesc:
+			where = append(where, "(j.created_at, j.id) < (?, ?)")
+			args = append(args, c.key, c.id)
+		case cursorState:
+			where = append(where, "("+jobStateRankSQL+", "+jobStateKeySQL+", j.id) > (?, ?, ?)")
+			args = append(args, c.rank, c.key, c.id)
+		}
 	}
 	args = append(args, limit+1)
-	rows, err := s.r.QueryContext(ctx, jobSelect+" WHERE "+strings.Join(where, " AND ")+
-		" GROUP BY j.id ORDER BY j.created_at, j.id LIMIT ?", args...)
+	// The page is chosen on jobs alone, so the order and the cursor can use
+	// an index; the task counts are joined for that page only.
+	rows, err := s.r.QueryContext(ctx, jobSelect+" WHERE j.id IN (SELECT j.id FROM jobs j WHERE "+
+		strings.Join(where, " AND ")+" ORDER BY "+order+" LIMIT ?) GROUP BY j.id ORDER BY "+order, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("list jobs: %w", err)
 	}
@@ -398,27 +478,100 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error
 	var next string
 	if len(out) > limit {
 		out = out[:limit]
-		last := out[limit-1]
-		next = encodeCursor(toMS(last.CreatedAt), last.ID)
+		last := &out[limit-1]
+		c := cursor{kind: kind, key: toMS(last.CreatedAt), id: last.ID}
+		if kind == cursorState {
+			c.rank, c.key = last.stateOrder()
+		}
+		next = c.encode()
 	}
 	return out, next, nil
 }
 
-func encodeCursor(ts int64, id string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(ts, 10) + ":" + id))
+// CountJobs counts the jobs f selects, ignoring its order, limit and cursor.
+func (s *Store) CountJobs(ctx context.Context, f JobFilter) (int, error) {
+	where := []string{"queue_id = ?"}
+	args := []any{f.QueueID}
+	if f.ClientID != "" {
+		where = append(where, "client_id = ?")
+		args = append(args, f.ClientID)
+	}
+	if len(f.States) > 0 {
+		where = append(where, "state IN ("+placeholders(len(f.States))+")")
+		for _, st := range f.States {
+			args = append(args, string(st))
+		}
+	}
+	if !f.Since.IsZero() {
+		where = append(where, "updated_at > ?")
+		args = append(args, toMS(f.Since))
+	}
+	var n int
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE `+strings.Join(where, " AND "),
+		args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count jobs: %w", err)
+	}
+	return n, nil
 }
 
-func decodeCursor(c string) (int64, string, error) {
-	b, err := base64.RawURLEncoding.DecodeString(c)
+// cursor is a decoded ListJobs page token. A creation-order cursor keeps
+// the original "<created_ms>:<id>" form, so cursors handed out before the
+// other orders existed still work; the others carry a prefix naming their
+// order.
+type cursor struct {
+	kind      string
+	rank, key int64
+	id        string
+}
+
+const (
+	cursorCreated     = ""
+	cursorCreatedDesc = "d"
+	cursorState       = "s"
+)
+
+func (c cursor) encode() string {
+	var raw string
+	switch c.kind {
+	case cursorState:
+		raw = "s:" + strconv.FormatInt(c.rank, 10) + ":" + strconv.FormatInt(c.key, 10) + ":" + c.id
+	case cursorCreatedDesc:
+		raw = "d:" + strconv.FormatInt(c.key, 10) + ":" + c.id
+	default:
+		raw = strconv.FormatInt(c.key, 10) + ":" + c.id
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeCursor parses a page token of the order kind.
+func decodeCursor(token, kind string) (cursor, error) {
+	bad := fmt.Errorf("%w: cursor", ErrInvalid)
+	b, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return 0, "", fmt.Errorf("%w: cursor", ErrInvalid)
+		return cursor{}, bad
 	}
-	tsStr, id, ok := strings.Cut(string(b), ":")
-	ts, err := strconv.ParseInt(tsStr, 10, 64)
-	if !ok || err != nil {
-		return 0, "", fmt.Errorf("%w: cursor", ErrInvalid)
+	raw := string(b)
+	c := cursor{kind: kind}
+	if kind != cursorCreated {
+		rest, ok := strings.CutPrefix(raw, kind+":")
+		if !ok {
+			return cursor{}, bad
+		}
+		raw = rest
 	}
-	return ts, id, nil
+	if kind == cursorState {
+		rankStr, rest, ok := strings.Cut(raw, ":")
+		if c.rank, err = strconv.ParseInt(rankStr, 10, 64); !ok || err != nil {
+			return cursor{}, bad
+		}
+		raw = rest
+	}
+	keyStr, id, ok := strings.Cut(raw, ":")
+	if c.key, err = strconv.ParseInt(keyStr, 10, 64); !ok || err != nil || id == "" {
+		return cursor{}, bad
+	}
+	c.id = id
+	return c, nil
 }
 
 // DeleteJob deletes a job and its tasks, ending its live leases as

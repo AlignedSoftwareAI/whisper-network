@@ -30,17 +30,26 @@
         {{range .Data.States}}<option value="{{.}}"{{if eq (print .) $.Data.State}} selected{{end}}>{{.}}</option>{{end}}
       </select>
     </label>
-    <button type="submit">Filter</button>
+    <label>Order
+      <select name="order_by">
+        {{range .Data.Sorts}}<option value="{{.Value}}"{{if eq .Value $.Data.Sort}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+    </label>
+    <button type="submit">Show</button>
   </form>
+  <form method="post" action="/ui/queues/{{$q.Name}}/bulk" id="bulk">
+  {{template "csrf" .CSRF}}
+  <input type="hidden" name="state" value="{{.Data.State}}">
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>Job</th><th>Label</th><th>State</th><th>Weight</th><th>Model</th><th class="n">Audio</th><th class="n">Tasks</th><th>Workers</th><th>Created</th></tr></thead>
+    <thead><tr><th><input type="checkbox" data-select-page aria-label="Select all on this page" hidden></th><th>Job</th><th>Label</th><th>State</th><th>Weight</th><th>Model</th><th class="n">Audio</th><th class="n">Tasks</th><th>Workers</th><th>Created</th></tr></thead>
     <tbody>
     {{range .Data.Jobs}}
     <tr>
+      <td><input type="checkbox" name="job_id" value="{{.ID}}" aria-label="Select job {{short .ID}}"></td>
       <td><a href="/ui/jobs/{{.ID}}" title="{{.ID}}"><code>{{short .ID}}</code></a></td>
       <td>{{.Label}}</td>
-      <td><span class="badge job-{{.State}}">{{.State}}</span></td>
+      <td><span class="badge job-{{.State}}">{{.State}}</span>{{if .Retries}} <span class="muted small">retried {{.Retries}}×</span>{{end}}</td>
       <td>{{.Weight}}</td>
       <td>{{.Model}}</td>
       <td class="n">{{if .Media.DurationS}}{{secs .Media.DurationS}}{{else}}—{{end}}</td>
@@ -49,11 +58,25 @@
       <td>{{when .CreatedAt}}</td>
     </tr>
     {{else}}
-    <tr><td colspan="9" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
+    <tr><td colspan="10" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
     {{end}}
     </tbody>
   </table>
   </div>
+  {{if .Data.Jobs}}
+  <div class="actions row">
+    <span class="muted small">Selected jobs:</span>
+    <button type="submit" name="op" value="retry-selected">Retry selected</button>
+    <button type="submit" name="op" value="delete-selected" class="danger">Delete selected</button>
+    {{if .Data.State}}
+    <span class="muted small">All {{.Data.Matching}} {{.Data.State}} jobs matching this filter:</span>
+    <button type="submit" name="op" value="retry-all">Retry all {{.Data.Matching}}</button>
+    <button type="submit" name="op" value="delete-all" class="danger">Delete all {{.Data.Matching}}</button>
+    {{end}}
+  </div>
+  {{end}}
+  </form>
+  <script src="{{.Data.Script}}" defer></script>
   {{with .Data.NextPage}}<p><a href="{{.}}">Next page →</a></p>{{end}}
   {{if .Data.OwnOnly}}<p class="muted small">Showing only your own jobs.</p>{{end}}
   {{else}}

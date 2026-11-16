@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -91,6 +93,24 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, p *Princ
 		}
 		f.Since = t
 	}
+	switch v := qv.Get("sort"); v {
+	case "", "created":
+		f.Sort = store.SortCreated
+	case "state":
+		f.Sort = store.SortState
+	default:
+		return badRequest(`sort must be "state" or "created"`)
+	}
+	switch v := qv.Get("order"); v {
+	case "", "asc":
+	case "desc":
+		if f.Sort == store.SortState {
+			return badRequest("order applies to sort=created only")
+		}
+		f.Desc = true
+	default:
+		return badRequest(`order must be "asc" or "desc"`)
+	}
 	if v := qv.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -162,13 +182,18 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, p *Princip
 }
 
 // serveOutput serves an assembled output of a done job and records the
-// download.
+// download. With ?partial=1 a job that is not done gets what exists so far
+// (DESIGN.md §8.4): the done tasks' segments with each gap marked; without
+// it such a job is a 409, so partial output is never mistaken for complete.
 func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, p *Principal, name, ctype string) error {
 	j, err := s.visibleJob(r, p, auth.ActDownloadTranscript)
 	if err != nil {
 		return err
 	}
 	if j.State != api.JobDone {
+		if v := r.URL.Query().Get("partial"); v == "1" || v == "true" {
+			return s.servePartial(w, r, j, name, ctype)
+		}
 		p := newProblem(http.StatusConflict, api.ProblemNotDone, "job is "+string(j.State))
 		p.state = string(j.State)
 		return p
@@ -190,18 +215,52 @@ func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, p *Principa
 	if fi, err := f.Stat(); err == nil {
 		s.extendWrite(w, fi.Size())
 	}
+	s.deliver(w, r, j.ID, modTime, f)
+	return nil
+}
+
+// servePartial serves the partial transcript or result of a job that is
+// not done. A job with no transcribe task yet (preparing, or failed while
+// preparing) has nothing to serve and is a 409.
+func (s *Server) servePartial(w http.ResponseWriter, r *http.Request, j *store.Job, name, ctype string) error {
+	outs, err := s.st.JobOutputs(r.Context(), j.ID)
+	if err != nil {
+		return err
+	}
+	if len(outs.Transcribe)+len(outs.Missing) == 0 {
+		p := newProblem(http.StatusConflict, api.ProblemNotDone, "job is "+string(j.State)+
+			"; nothing has been transcribed yet")
+		p.state = string(j.State)
+		return p
+	}
+	txt, res, err := partialOutputs(j, outs, s.now())
+	if err != nil {
+		return err
+	}
+	body := txt
+	if name == blobs.Result {
+		body = res
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", "private, no-store")
+	s.extendWrite(w, int64(len(body)))
+	s.deliver(w, r, j.ID, time.Time{}, bytes.NewReader(body))
+	return nil
+}
+
+// deliver serves content and records the download. Only a delivered body
+// is a download: not HEAD, not 304 or 412, not a transfer the client
+// abandoned.
+func (s *Server) deliver(w http.ResponseWriter, r *http.Request, jobID string, modTime time.Time, content io.ReadSeeker) {
 	dw := &downloadWriter{ResponseWriter: w}
-	http.ServeContent(dw, r, "", modTime, f)
-	// Only a delivered body is a download: not HEAD, not 304 or 412, not
-	// a transfer the client abandoned.
+	http.ServeContent(dw, r, "", modTime, content)
 	if r.Method != http.MethodGet || dw.err != nil ||
 		(dw.status != http.StatusOK && dw.status != http.StatusPartialContent) {
-		return nil
+		return
 	}
-	if err := s.st.RecordDownload(context.WithoutCancel(r.Context()), j.ID); err != nil {
-		s.log.Warn().Err(err).Str(obs.FieldJobID, j.ID).Msg("recording a download failed")
+	if err := s.st.RecordDownload(context.WithoutCancel(r.Context()), jobID); err != nil {
+		s.log.Warn().Err(err).Str(obs.FieldJobID, jobID).Msg("recording a download failed")
 	}
-	return nil
 }
 
 // downloadWriter records a response's status and whether writing it failed.
@@ -235,11 +294,10 @@ func (d *downloadWriter) Unwrap() http.ResponseWriter { return d.ResponseWriter 
 // (JobDocument), adding each job's submitter. Submitter names are resolved
 // once per distinct owner, so a page of jobs costs one lookup per owner.
 func (s *Server) JobDocuments(ctx context.Context, p auth.Principal, jobs []store.Job) []api.Job {
-	now := s.now()
 	names := map[string]*api.Submitter{}
 	out := make([]api.Job, len(jobs))
 	for i := range jobs {
-		out[i] = JobDocument(p, &jobs[i], now)
+		out[i] = s.JobDocument(p, &jobs[i])
 		owner := jobs[i].ClientID
 		sub, ok := names[owner]
 		if !ok {

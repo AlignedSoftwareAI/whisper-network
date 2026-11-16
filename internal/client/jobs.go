@@ -90,10 +90,13 @@ func writeSubmitBody(mw *multipart.Writer, params []byte, media io.Reader, filen
 
 // ListOptions filter GET /queue/{q}. Zero values are omitted.
 type ListOptions struct {
-	State  api.JobState
-	Since  time.Time
-	Limit  int
-	Cursor string
+	State api.JobState
+	Since time.Time
+	// Sort is "state" or "created" (the server default); Order is "asc"
+	// (the default) or "desc", for Sort "created" only.
+	Sort, Order string
+	Limit       int
+	Cursor      string
 }
 
 // ListJobs lists the jobs on queue visible to the caller, one page at a time.
@@ -105,6 +108,12 @@ func (c *Client) ListJobs(ctx context.Context, queue string, opt ListOptions) (*
 	}
 	if !opt.Since.IsZero() {
 		q.Set("since", opt.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if opt.Sort != "" {
+		q.Set("sort", opt.Sort)
+	}
+	if opt.Order != "" {
+		q.Set("order", opt.Order)
 	}
 	if opt.Limit > 0 {
 		q.Set("limit", strconv.Itoa(opt.Limit))
@@ -142,7 +151,22 @@ func (c *Client) Job(ctx context.Context, id string) (*api.Job, error) {
 // header included. The caller must close the reader. A job that is not done
 // yields an error for which IsNotDone is true.
 func (c *Client) Transcript(ctx context.Context, id string) (io.ReadCloser, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, c.endpoint("job", id, "transcript"), nil)
+	return c.transcript(ctx, id, false)
+}
+
+// PartialTranscript is Transcript, except that a job that is not done
+// yields what is transcribed so far, each gap marked and the header ending
+// in "; partial=true; missing=K/N" (a done job's transcript is complete).
+func (c *Client) PartialTranscript(ctx context.Context, id string) (io.ReadCloser, error) {
+	return c.transcript(ctx, id, true)
+}
+
+func (c *Client) transcript(ctx context.Context, id string, partial bool) (io.ReadCloser, error) {
+	u := c.endpoint("job", id, "transcript")
+	if partial {
+		u.RawQuery = "partial=1"
+	}
+	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +180,44 @@ func (c *Client) Transcript(ctx context.Context, id string) (io.ReadCloser, erro
 
 // Result returns a finished job's segments with absolute times.
 func (c *Client) Result(ctx context.Context, id string) (*api.JobResult, error) {
+	return c.result(ctx, id, false)
+}
+
+// PartialResult is Result, except that a job that is not done yields the
+// segments so far with Partial set and the gaps in Missing.
+func (c *Client) PartialResult(ctx context.Context, id string) (*api.JobResult, error) {
+	return c.result(ctx, id, true)
+}
+
+func (c *Client) result(ctx context.Context, id string, partial bool) (*api.JobResult, error) {
+	u := c.endpoint("job", id, "result")
+	if partial {
+		u.RawQuery = "partial=1"
+	}
 	var out api.JobResult
-	if _, err := c.doJSON(ctx, http.MethodGet, c.endpoint("job", id, "result"), nil, &out, http.StatusOK); err != nil {
+	if _, err := c.doJSON(ctx, http.MethodGet, u, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RetryJob retries a failed job: done tasks are kept, the rest run again.
+// A job that is not failed, or whose media was purged, is a 409
+// not-retryable error.
+func (c *Client) RetryJob(ctx context.Context, id string) (*api.Job, error) {
+	var out api.Job
+	if _, err := c.doJSON(ctx, http.MethodPost, c.endpoint("job", id, "retry"), nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Bulk retries or deletes many jobs of queue (POST /queue/{q}/bulk). A
+// filter selection larger than api.MaxBulkJobs returns NextCursor; send
+// the request again with Filter.Cursor set to continue.
+func (c *Client) Bulk(ctx context.Context, queue string, req api.BulkRequest) (*api.BulkResult, error) {
+	var out api.BulkResult
+	if _, err := c.doJSON(ctx, http.MethodPost, c.endpoint("queue", queue, "bulk"), req, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &out, nil

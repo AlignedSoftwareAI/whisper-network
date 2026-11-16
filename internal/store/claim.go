@@ -81,15 +81,17 @@ func (l *Lease) API(heartbeatInterval time.Duration) api.Lease {
 const processGrantSQL = `EXISTS (SELECT 1 FROM grants g WHERE g.principal = ? AND g.role = 'process'
 	AND (g.scope = '*' OR g.scope = 'queue:' || j.queue_id))`
 
-// failedHereSQL is a condition (over t = tasks, with the worker id as its one
-// argument) that the worker has a failed (other than before work started) or
-// expired lease on the task. The
+// failedHereSQL is a condition (over t = tasks and j = jobs, with the worker
+// id as its one argument) that the worker has a failed (other than before
+// work started) or expired lease on the task since the job was last retried.
+// The
 // t.attempts check skips the lookup for tasks that never failed anywhere: a
 // task's attempts count the distinct workers its failed and expired leases
 // ran on (plus one while it is leased), so it is 0 for a pending task with
 // none.
 const failedHereSQL = `(t.attempts > 0 AND EXISTS (SELECT 1 FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
-	AND x.worker_id = ? AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work'))`
+	AND x.worker_id = ? AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work'
+	AND x.retry = j.retries))`
 
 // eligibilitySQL returns the WHERE fragment (over t = tasks, j = jobs) that
 // selects pending tasks workerID may take, or ok = false if none can match.
@@ -187,8 +189,9 @@ func (s *Store) claim(ctx context.Context, tx *sql.Tx, workerID, where string, a
 		return nil, err
 	}
 	id := s.cfg.NewID(IDLease)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO leases (id, job_id, seq, worker_id, created_at, expires_at)
-		VALUES (?,?,?,?,?,?)`, id, jobID, seq, workerID, toMS(now), toMS(now.Add(ttl))); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO leases (id, job_id, seq, worker_id, created_at, expires_at, retry)
+		VALUES (?,?,?,?,?,?,(SELECT retries FROM jobs WHERE id = ?))`,
+		id, jobID, seq, workerID, toMS(now), toMS(now.Add(ttl)), jobID); err != nil {
 		return nil, fmt.Errorf("claim: insert lease: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET started_at = COALESCE(started_at, ?), updated_at = ?,

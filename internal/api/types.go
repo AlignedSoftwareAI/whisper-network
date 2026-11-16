@@ -146,6 +146,10 @@ type MediaInfo struct {
 	DurationS      float64 `json:"duration_s,omitempty"`
 	OriginalPurged bool    `json:"original_purged"`
 	AudioPurged    bool    `json:"audio_purged"`
+	// KeptUntil is, for a failed job whose media is still present, when
+	// the failed-job retention (--failed-retention) lets the reaper purge
+	// it. A full disk can purge it sooner.
+	KeptUntil *time.Time `json:"kept_until,omitempty"`
 }
 
 // TaskCounts summarizes a job's tasks by state.
@@ -196,11 +200,77 @@ type Job struct {
 	ComputeS    float64         `json:"compute_s"`
 	Downloads   Downloads       `json:"downloads"`
 	Error       *string         `json:"error"`
+	// Retries counts how many times the job was retried after failing
+	// (POST /job/{id}/retry).
+	Retries int `json:"retries"`
+	// Retryable is true for a failed job whose retained media is still
+	// present, so POST /job/{id}/retry would be accepted.
+	Retryable bool `json:"retryable"`
 }
 
 // JobList is the response of GET /queue/{q}.
 type JobList struct {
 	Jobs       []Job  `json:"jobs"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+// Bulk job actions (POST /queue/{q}/bulk).
+const (
+	BulkRetry  = "retry"
+	BulkDelete = "delete"
+	// MaxBulkJobs caps the jobs one bulk request acts on; a larger
+	// selection pages with BulkResult.NextCursor.
+	MaxBulkJobs = 500
+)
+
+// BulkRequest is the body of POST /queue/{q}/bulk. It names the jobs
+// either by JobIDs (at most MaxBulkJobs) or by Filter, never both.
+type BulkRequest struct {
+	Action string      `json:"action"` // BulkRetry or BulkDelete
+	JobIDs []string    `json:"job_ids,omitempty"`
+	Filter *BulkFilter `json:"filter,omitempty"`
+	// DryRun reports what would happen without changing anything.
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+// BulkFilter selects a queue's jobs as GET /queue/{q} would list them
+// (oldest first, only those the caller may see). State is required.
+type BulkFilter struct {
+	State JobState `json:"state"`
+	// Since keeps only jobs updated after it (for failed jobs: failed
+	// after it).
+	Since *time.Time `json:"since,omitempty"`
+	// Cursor continues a selection from BulkResult.NextCursor.
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// Bulk outcomes of one job.
+const (
+	OutcomeRetried     = "retried"
+	OutcomeDeleted     = "deleted"
+	OutcomeWouldRetry  = "would_retry"  // dry run
+	OutcomeWouldDelete = "would_delete" // dry run
+	OutcomeSkipped     = "skipped"      // with a Reason
+	OutcomeForbidden   = "forbidden"
+	OutcomeNotFound    = "not_found" // unknown, not on this queue, or not visible
+)
+
+// BulkJobResult is one job's outcome in a BulkResult.
+type BulkJobResult struct {
+	JobID   string `json:"job_id"`
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// BulkResult is the response of POST /queue/{q}/bulk.
+type BulkResult struct {
+	Action string          `json:"action"`
+	DryRun bool            `json:"dry_run,omitempty"`
+	Jobs   []BulkJobResult `json:"jobs"`
+	// Counts tallies Jobs by outcome.
+	Counts map[string]int `json:"counts"`
+	// NextCursor, for a filter selection with more matching jobs than
+	// MaxBulkJobs, continues it (BulkFilter.Cursor).
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
@@ -250,6 +320,19 @@ type JobResult struct {
 	JobID      string    `json:"job_id"`
 	Provenance string    `json:"provenance"`
 	Segments   []Segment `json:"segments"`
+	// Partial and Missing are set only by ?partial=1 on a job that is not
+	// done: Missing lists the audio the transcript lacks, one entry per
+	// transcribe task that is not done.
+	Partial bool  `json:"partial,omitempty"`
+	Missing []Gap `json:"missing,omitempty"`
+}
+
+// Gap is a span of audio a partial transcript lacks: transcribe task Task,
+// absolute times in milliseconds.
+type Gap struct {
+	Task    int   `json:"task"`
+	StartMS int64 `json:"start_ms"`
+	EndMS   int64 `json:"end_ms"`
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +537,7 @@ const (
 	ProblemTooLarge       = "too-large"
 	ProblemResultInvalid  = "result-invalid"
 	ProblemNotDone        = "not-done"
+	ProblemNotRetryable   = "not-retryable"
 	ProblemStorageFull    = "storage-full"
 	ProblemRateLimited    = "rate-limited"
 	ProblemInternal       = "internal"

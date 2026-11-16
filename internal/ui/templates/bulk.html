@@ -1,0 +1,36 @@
+{{define "content"}}
+{{$v := .Data}}
+<h1>{{if $v.Done}}Bulk {{$v.Action}}: result{{else}}Confirm bulk {{$v.Action}}{{end}}</h1>
+<section class="card">
+  {{if $v.Done}}
+  <p class="summary"><strong>{{$v.Summary}}</strong></p>
+  <div class="scroll">
+  <table class="data">
+    <thead><tr><th>Job</th><th>Outcome</th></tr></thead>
+    <tbody>
+    {{range $v.Results}}
+    <tr><td><a href="/ui/jobs/{{.JobID}}" title="{{.JobID}}"><code>{{short .JobID}}</code></a></td>
+      <td>{{.Outcome}}{{with .Reason}}: {{.}}{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p><a href="{{$v.Back}}">Back to queue {{$v.Queue}}</a></p>
+  {{else}}
+  <p>{{if eq $v.Action "delete"}}Delete{{else}}Retry{{end}} <strong>{{$v.Count}}</strong>
+    {{if $v.State}}{{$v.State}} job(s) matching the filter{{else}}selected job(s){{end}} on queue <strong>{{$v.Queue}}</strong>?
+    {{if eq $v.Action "delete"}}Their media and transcripts are removed; this cannot be undone.
+    {{else}}Finished tasks are kept; the rest run again. Jobs whose media was purged are skipped.{{end}}
+    Jobs you may not act on are reported, not changed.</p>
+  <form method="post" action="/ui/queues/{{$v.Queue}}/bulk" class="row">
+    {{template "csrf" .CSRF}}
+    <input type="hidden" name="op" value="{{$v.Action}}-{{if $v.State}}all{{else}}selected{{end}}">
+    <input type="hidden" name="state" value="{{$v.State}}">
+    {{range $v.JobIDs}}<input type="hidden" name="job_id" value="{{.}}">{{end}}
+    <input type="hidden" name="confirm" value="1">
+    <button type="submit"{{if eq $v.Action "delete"}} class="danger"{{end}}>{{if eq $v.Action "delete"}}Delete{{else}}Retry{{end}} {{$v.Count}}</button>
+    <a class="button secondary" href="{{$v.Back}}">Cancel</a>
+  </form>
+  {{end}}
+</section>
+{{end}}

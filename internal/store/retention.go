@@ -14,17 +14,18 @@ type MediaPurge struct {
 	Canonical bool // the canonical audio is still present
 }
 
-// MediaToPurge returns terminal (done or failed) jobs that finished at or
-// before cutoff (now − audio_retention) and still have original or canonical
-// media. Callers delete the blobs, then call MarkOriginalPurged /
-// MarkCanonicalPurged.
-func (s *Store) MediaToPurge(ctx context.Context, cutoff time.Time) ([]MediaPurge, error) {
+// MediaToPurge returns terminal jobs that still have original or canonical
+// media and finished at or before their cutoff: doneCutoff (now −
+// audio_retention) for done jobs, failedCutoff (now − failed_retention)
+// for failed ones (DESIGN.md §8.5). Callers delete the blobs, then call
+// MarkOriginalPurged / MarkCanonicalPurged.
+func (s *Store) MediaToPurge(ctx context.Context, doneCutoff, failedCutoff time.Time) ([]MediaPurge, error) {
 	rows, err := s.r.QueryContext(ctx, `SELECT id, original_purged_at IS NULL AND original_bytes > 0,
 		canonical_purged_at IS NULL AND canonical_bytes IS NOT NULL
-		FROM jobs WHERE state IN ('done','failed') AND completed_at <= ?
+		FROM jobs WHERE ((state = 'done' AND completed_at <= ?) OR (state = 'failed' AND completed_at <= ?))
 		AND ((original_purged_at IS NULL AND original_bytes > 0)
 		  OR (canonical_purged_at IS NULL AND canonical_bytes IS NOT NULL))
-		ORDER BY completed_at`, toMS(cutoff))
+		ORDER BY completed_at`, toMS(doneCutoff), toMS(failedCutoff))
 	if err != nil {
 		return nil, fmt.Errorf("media to purge: %w", err)
 	}

@@ -31,11 +31,7 @@ func (s *Server) assemble(ctx context.Context, job *store.Job) error {
 	if err != nil {
 		return err
 	}
-	var txt strings.Builder
-	txt.WriteString("# " + prov + "\n")
-	for _, sg := range segs {
-		fmt.Fprintf(&txt, "[%s] %s\n", formatTimestamp(sg.StartMS), sg.Text)
-	}
+	txt := transcriptText(prov, segs, nil)
 	res, err := json.Marshal(api.JobResult{JobID: job.ID, Provenance: prov, Segments: segs})
 	if err != nil {
 		return err
@@ -43,7 +39,63 @@ func (s *Server) assemble(ctx context.Context, job *store.Job) error {
 	if err := s.blobs.WriteFile(job.ID, blobs.Result, append(res, '\n')); err != nil {
 		return err
 	}
-	return s.blobs.WriteFile(job.ID, blobs.Transcript, []byte(txt.String()))
+	return s.blobs.WriteFile(job.ID, blobs.Transcript, txt)
+}
+
+// transcriptText renders transcript.txt: the provenance header, then one
+// "[mm:ss.ss] text" line per segment, with each gap's marker line (partial
+// transcripts only) before the first segment at or after its start.
+func transcriptText(prov string, segs []api.Segment, gaps []api.Gap) []byte {
+	var txt strings.Builder
+	txt.WriteString("# " + prov + "\n")
+	g := 0
+	for _, sg := range segs {
+		for ; g < len(gaps) && gaps[g].StartMS <= sg.StartMS; g++ {
+			txt.WriteString(gapMarker(gaps[g]) + "\n")
+		}
+		fmt.Fprintf(&txt, "[%s] %s\n", formatTimestamp(sg.StartMS), sg.Text)
+	}
+	for ; g < len(gaps); g++ {
+		txt.WriteString(gapMarker(gaps[g]) + "\n")
+	}
+	return []byte(txt.String())
+}
+
+// gapMarker is a partial transcript's inline mark for missing audio:
+// "[... missing 1:03:12-1:58:40 (task 6) ...]".
+func gapMarker(g api.Gap) string {
+	return fmt.Sprintf("[... missing %s-%s (task %d) ...]", hms(g.StartMS), hms(g.EndMS), g.Task)
+}
+
+// hms renders milliseconds as H:MM:SS, truncating to the second.
+func hms(ms int64) string {
+	s := ms / 1000
+	return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+}
+
+// partialOutputs builds the transcript text and result JSON of a job that
+// is not done (DESIGN.md §8.4): the done tasks' segments, a gap for every
+// transcribe task that is not done, and "; partial=true; missing=K/N" at
+// the end of the provenance header. Nothing is stored: the output changes
+// as tasks finish, and a retried job may still complete.
+func partialOutputs(job *store.Job, outs *store.JobOutputs, now time.Time) (txt, res []byte, err error) {
+	segs, prov, err := buildTranscript(job, outs, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	total := len(outs.Transcribe) + len(outs.Missing)
+	prov += fmt.Sprintf("; partial=true; missing=%d/%d", len(outs.Missing), total)
+	gaps := make([]api.Gap, len(outs.Missing))
+	for i, t := range outs.Missing {
+		gaps[i] = api.Gap{Task: t.Seq, StartMS: t.StartSample * 1000 / media.SampleRate,
+			EndMS: t.EndSample * 1000 / media.SampleRate}
+	}
+	res, err = json.Marshal(api.JobResult{JobID: job.ID, Provenance: prov, Segments: segs,
+		Partial: true, Missing: gaps})
+	if err != nil {
+		return nil, nil, err
+	}
+	return transcriptText(prov, segs, gaps), append(res, '\n'), nil
 }
 
 // buildTranscript converts task outputs to absolute segments and the

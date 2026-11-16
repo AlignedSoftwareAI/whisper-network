@@ -14,3 +14,12 @@ func Free(path string) (int64, error) {
 	// The field types differ between platforms, hence the conversions.
 	return int64(st.Bavail) * int64(st.Bsize), nil
 }
+
+// Total returns the size of the filesystem holding path.
+func Total(path string) (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Blocks) * int64(st.Bsize), nil
+}

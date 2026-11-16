@@ -23,6 +23,9 @@ const (
 	ActDownloadTranscript
 	// ActDeleteJob deletes a job; needs Queue and OwnerID.
 	ActDeleteJob
+	// ActRetryJob retries a failed job (POST /job/{id}/retry): its owner,
+	// queue_admin on its queue, or admin; needs Queue and OwnerID.
+	ActRetryJob
 	// ActPatchQueueDescription changes a queue's description.
 	ActPatchQueueDescription
 	// ActPatchQueueMaxUpload changes a queue's max_upload_bytes.

@@ -32,6 +32,7 @@ type llmsData struct {
 	MaxLabel          int
 	MaxMetadata       int
 	AudioRetention    string
+	FailedRetention   string
 	JobRetention      string
 }
 
@@ -53,6 +54,7 @@ func renderLLMs(cfg Config) ([]byte, error) {
 		MaxLabel:          api.MaxLabelLen,
 		MaxMetadata:       api.MaxMetadataBytes,
 		AudioRetention:    humanDuration(cfg.AudioRetention),
+		FailedRetention:   humanDuration(cfg.FailedRetention),
 		JobRetention:      humanDuration(cfg.JobRetention),
 	}
 	if d.BaseOrPlaceholder == "" {

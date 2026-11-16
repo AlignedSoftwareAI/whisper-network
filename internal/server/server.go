@@ -65,6 +65,14 @@ type Config struct {
 
 	// AudioRetention keeps canonical audio after a job ends. Default 24h.
 	AudioRetention time.Duration
+	// FailedRetention keeps a failed job's retained media (the original if
+	// prepare never succeeded, else the canonical audio) at least this long
+	// after it failed, so the job can be retried. Default 24h.
+	FailedRetention time.Duration
+	// FailedMaxDisk caps the data filesystem's use: while it is fuller, the
+	// reaper purges the media of the oldest failed jobs first (never a live
+	// job's). Default 80%.
+	FailedMaxDisk DiskCeiling
 	// JobRetention keeps finished jobs and transcripts. Default 720h.
 	JobRetention time.Duration
 	// PendingWorkerTTL deletes pending workers unseen this long. Default 168h.
@@ -168,6 +176,8 @@ func DefaultConfig() Config {
 		MaxUploadBytes:          2 << 30,
 		MinFreeBytes:            1 << 30,
 		AudioRetention:          24 * time.Hour,
+		FailedRetention:         24 * time.Hour,
+		FailedMaxDisk:           DiskCeiling{Percent: 80},
 		JobRetention:            720 * time.Hour,
 		PendingWorkerTTL:        7 * 24 * time.Hour,
 		RetryWaitLimit:          24 * time.Hour,
@@ -212,6 +222,10 @@ func (c *Config) applyDefaults() {
 	setDur(&c.SplitWindow, d.SplitWindow)
 	setDur(&c.MaxAudio, d.MaxAudio)
 	setDur(&c.AudioRetention, d.AudioRetention)
+	setDur(&c.FailedRetention, d.FailedRetention)
+	if c.FailedMaxDisk == (DiskCeiling{}) {
+		c.FailedMaxDisk = d.FailedMaxDisk
+	}
 	setDur(&c.JobRetention, d.JobRetention)
 	setDur(&c.PendingWorkerTTL, d.PendingWorkerTTL)
 	setDur(&c.RetryWaitLimit, d.RetryWaitLimit)
@@ -299,6 +313,10 @@ type Deps struct {
 	Now func() time.Time
 	// FreeBytes reports free space for a path (FreeBytes).
 	FreeBytes func(path string) (int64, error)
+	// TotalBytes reports the size of the filesystem holding a path
+	// (TotalBytes), for FailedMaxDisk. When FreeBytes is set and this is
+	// not, the size is unknown and FailedMaxDisk is not enforced.
+	TotalBytes func(path string) (int64, error)
 	// HTTPClient fetches models from upstream (a client with no overall
 	// timeout; fetches are bounded by context).
 	HTTPClient *http.Client
@@ -333,6 +351,9 @@ type Server struct {
 
 	// llms is the rendered /llms.txt (llms.go).
 	llms []byte
+	// bulkLimit caps the jobs of one bulk request (api.MaxBulkJobs; tests
+	// lower it).
+	bulkLimit int
 
 	cfg         Config
 	st          *store.Store
@@ -341,6 +362,7 @@ type Server struct {
 	metrics     *obs.Metrics
 	now         func() time.Time
 	freeBytes   func(string) (int64, error)
+	totalBytes  func(string) (int64, error)
 	httpClient  *http.Client
 	lookupModel func(string) (models.Model, error)
 	newTicker   func(time.Duration) Ticker
@@ -382,9 +404,9 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	}
 	s := &Server{
 		cfg: cfg, st: deps.Store, blobs: deps.Blobs, log: deps.Logger, metrics: deps.Metrics,
-		now: deps.Now, freeBytes: deps.FreeBytes, httpClient: deps.HTTPClient,
+		now: deps.Now, freeBytes: deps.FreeBytes, totalBytes: deps.TotalBytes, httpClient: deps.HTTPClient,
 		lookupModel: deps.LookupModel, newTicker: deps.NewTicker,
-		disp: newDispatcher(), locks: newJobLocks(),
+		disp: newDispatcher(), locks: newJobLocks(), bulkLimit: api.MaxBulkJobs,
 	}
 	if s.metrics == nil {
 		s.metrics = obs.NewMetrics(newMetricsSet())
@@ -394,6 +416,15 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	}
 	if s.freeBytes == nil {
 		s.freeBytes = FreeBytes
+	}
+	switch {
+	case s.totalBytes != nil:
+	case deps.FreeBytes != nil:
+		// The probes must agree: a faked free space against the real
+		// filesystem size would trip the ceiling at random.
+		s.totalBytes = func(string) (int64, error) { return 0, errors.New("no filesystem size probe") }
+	default:
+		s.totalBytes = TotalBytes
 	}
 	if s.httpClient == nil {
 		s.httpClient = &http.Client{}

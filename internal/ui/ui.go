@@ -96,9 +96,11 @@ func (u *UI) routes() *http.ServeMux {
 	m.Handle("POST /ui/queues", u.authed(u.handleCreateQueue))
 	m.Handle("GET /ui/queues/{q}", u.authed(u.handleQueue))
 	m.Handle("POST /ui/queues/{q}", u.authed(u.handlePatchQueue))
+	m.Handle("POST /ui/queues/{q}/bulk", u.authed(u.handleBulk))
 
 	m.Handle("GET /ui/jobs/{id}", u.authed(u.handleJob))
 	m.Handle("POST /ui/jobs/{id}/delete", u.authed(u.handleDeleteJob))
+	m.Handle("POST /ui/jobs/{id}/retry", u.authed(u.handleRetryJob))
 
 	m.Handle("GET /ui/users", u.authed(u.handleUsers))
 	m.Handle("POST /ui/users", u.authed(u.handleCreateUser))

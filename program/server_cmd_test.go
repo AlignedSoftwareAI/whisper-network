@@ -52,6 +52,8 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	assert.Equal(t, 1, cfg.AnalysesPerPrincipal)
 	assert.Equal(t, 6*time.Hour, cfg.MaxLeaseAge)
 	assert.InDelta(t, 4.0, cfg.LeaseAgeFactor, 0)
+	assert.Equal(t, 24*time.Hour, cfg.FailedRetention)
+	assert.Equal(t, server.DiskCeiling{Percent: 80}, cfg.FailedMaxDisk)
 	scfg, err := c.storeConfig()
 	require.NoError(t, err)
 	assert.Equal(t, 3, scfg.WorkerFailureLimit, "the worker circuit breaker is on by default")
@@ -60,6 +62,15 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sched.ClassWeights{Low: 1, Medium: 3, High: 9}, w)
 	assert.Equal(t, map[string]float64{"small.en": 1, "large-v3-turbo": 3}, mf)
+}
+
+func TestServerCmdFailedRetention(t *testing.T) {
+	opts, err := parse(t, "server", "--failed-retention", "48h", "--failed-retention-max-disk", "200GiB")
+	require.NoError(t, err)
+	cfg, err := opts.Server.serverConfig()
+	require.NoError(t, err)
+	assert.Equal(t, 48*time.Hour, cfg.FailedRetention)
+	assert.Equal(t, server.DiskCeiling{Bytes: 200 << 30}, cfg.FailedMaxDisk)
 }
 
 func TestServerCmdEnv(t *testing.T) {
@@ -98,6 +109,8 @@ func TestServerCmdValidation(t *testing.T) {
 		{"--max-upload-bytes", "lots"},
 		{"--min-transfer-rate", "0"},
 		{"--password-memory-budget", "much"},
+		{"--failed-retention-max-disk", "120%"},
+		{"--failed-retention-max-disk", "lots"},
 	} {
 		opts, err := parse(t, append([]string{"server"}, args...)...)
 		require.NoError(t, err)

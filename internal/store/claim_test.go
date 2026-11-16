@@ -257,11 +257,15 @@ func TestRetentionQueries(t *testing.T) {
 	finished := f.clk.Now()
 	f.clk.Advance(25 * time.Hour)
 
-	none, err := f.s.MediaToPurge(f.ctx, finished.Add(-time.Millisecond))
+	none, err := f.s.MediaToPurge(f.ctx, finished.Add(-time.Millisecond), finished.Add(-time.Millisecond))
 	require.NoError(t, err)
 	assert.Empty(t, none)
+	onlyDone, err := f.s.MediaToPurge(f.ctx, f.clk.Now(), finished.Add(-time.Millisecond))
+	require.NoError(t, err)
+	assert.Equal(t, []MediaPurge{{JobID: done.ID, Original: true, Canonical: true}}, onlyDone,
+		"failed jobs follow their own retention")
 
-	ps, err := f.s.MediaToPurge(f.ctx, f.clk.Now().Add(-24*time.Hour))
+	ps, err := f.s.MediaToPurge(f.ctx, f.clk.Now().Add(-24*time.Hour), f.clk.Now().Add(-24*time.Hour))
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []MediaPurge{
 		{JobID: done.ID, Original: true, Canonical: true},
@@ -270,7 +274,7 @@ func TestRetentionQueries(t *testing.T) {
 	require.NoError(t, f.s.MarkOriginalPurged(f.ctx, done.ID))
 	require.NoError(t, f.s.MarkCanonicalPurged(f.ctx, done.ID))
 	require.NoError(t, f.s.MarkOriginalPurged(f.ctx, failed.ID))
-	ps, err = f.s.MediaToPurge(f.ctx, f.clk.Now())
+	ps, err = f.s.MediaToPurge(f.ctx, f.clk.Now(), f.clk.Now())
 	require.NoError(t, err)
 	assert.Empty(t, ps)
 	got, err := f.s.Job(f.ctx, done.ID)

@@ -48,7 +48,8 @@ func (s *Store) FailStranded(ctx context.Context, limit time.Duration) ([]Strand
 		rows, err := tx.QueryContext(ctx, `SELECT t.job_id, t.seq, t.kind, COALESCE(t.error, '') FROM tasks t
 			WHERE t.state = 'pending' AND t.attempts > 0
 			AND (SELECT MAX(x.ended_at) FROM leases x WHERE x.job_id = t.job_id AND x.seq = t.seq
-				AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work') <= ?
+				AND x.outcome IN ('failed','expired') AND x.stage IS NOT 'pre-work'
+				AND x.retry = (SELECT retries FROM jobs WHERE id = t.job_id)) <= ?
 			AND NOT EXISTS (SELECT 1 FROM leases y WHERE y.job_id = t.job_id AND y.seq = t.seq
 				AND (y.ended_at IS NULL OR y.ended_at > ?))
 			ORDER BY t.job_id, t.seq`, cutoff, cutoff)
