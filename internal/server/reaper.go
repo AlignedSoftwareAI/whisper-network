@@ -15,10 +15,14 @@ import (
 	"github.com/deweysasser/whisper-network/internal/store"
 )
 
+// ThroughputRetention is how long the reaper keeps fleet throughput buckets
+// (DESIGN.md §8.5). The dashboard reads the last hour; the rest is headroom.
+const ThroughputRetention = 24 * time.Hour
+
 // reapOnce runs one reaper pass (DESIGN.md §8.3, §8.5): expire leases,
 // fail tasks no other eligible worker took within the retry wait limit,
 // finish jobs whose assembly was interrupted, purge media and jobs past
-// retention, and delete stale leases, pending workers and sessions. Each
+// retention, and delete stale leases, throughput buckets, pending workers and sessions. Each
 // step logs its own failure and the pass continues; the next tick retries.
 func (s *Server) reapOnce(ctx context.Context) {
 	now := s.now()
@@ -96,6 +100,9 @@ func (s *Server) reapOnce(ctx context.Context) {
 	n64, err := s.st.DeleteEndedLeases(ctx, now.Add(-s.cfg.EndedLeaseRetention))
 	fail("delete ended leases", err)
 	counts["leases_deleted"] = int(n64)
+	n64, err = s.st.PruneThroughput(ctx, now.Add(-ThroughputRetention))
+	fail("prune throughput", err)
+	counts["throughput_buckets_deleted"] = int(n64)
 	n64, err = s.ops.PrunePendingWorkers(ctx, now.Add(-s.cfg.PendingWorkerTTL))
 	fail("delete pending workers", err)
 	counts["pending_workers_deleted"] = int(n64)

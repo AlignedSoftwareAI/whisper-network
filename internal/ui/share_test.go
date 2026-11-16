@@ -82,8 +82,9 @@ func TestDashboardNumbers(t *testing.T) {
 	e.queue("idle")
 	e.user("root", api.Grant{Role: api.RoleAdmin, Scope: "*"})
 	tok := e.client(api.Grant{Role: api.RoleSubmit, Scope: "queue:public"})
+	var jobs []string
 	for range 3 {
-		e.submitAudio(tok, "public", "x", 12)
+		jobs = append(jobs, e.submitAudio(tok, "public", "x", 12).ID)
 	}
 	wid, wtok := e.worker("runner", "")
 	require.NoError(t, e.srv.Ops().ApproveWorker(e.ctx, server.CLIActor(), wid, []string{"public"}))
@@ -94,10 +95,16 @@ func TestDashboardNumbers(t *testing.T) {
 	assert.Regexp(t, `<span class="big">3</span><span>pending tasks</span>`, body)
 
 	e.runJob(wid, wtok)
+	// Clients delete jobs once they have the transcript; the throughput
+	// counts the tasks completed regardless (#87).
+	for _, id := range jobs {
+		_, err := e.srv.Store().DeleteJob(e.ctx, id)
+		require.NoError(t, err)
+	}
 	resp, body := b.get("/ui/dashboard/stats")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	body = plainHelp(body)
-	// 3 jobs × 12 s of audio in the last hour: 0.01 h/h.
+	// 3 tasks × 12 s of audio in the last hour, jobs deleted: 0.01 h/h.
 	assert.Contains(t, body, `<span class="big">0.01</span><span>audio-hours / hour</span>`)
 	assert.Contains(t, body, "since the server started")
 	share := regexp.MustCompile(`<td>public</td>\s*<td class="n">100</td>\s*<td><meter[^>]*value="100.0"></meter> 100%</td>\s*<td><meter[^>]*value="100.0"`)

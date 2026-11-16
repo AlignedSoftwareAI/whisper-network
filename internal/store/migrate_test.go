@@ -44,8 +44,8 @@ func TestMigrationReadAll(t *testing.T) {
 	// deployment. The read_all migration is data-only; 0006 then re-adds
 	// leases.heartbeat_at and 0007 the failure streak table and
 	// workers.pause_reason, 0008 leases.stage, 0009 the retry columns and
-	// state-order index and 0010 tasks.pending_since, so those are dropped
-	// first.
+	// state-order index, 0010 tasks.pending_since and 0011 the throughput
+	// table, so those are dropped first.
 	_, err := f.s.w.ExecContext(f.ctx, `
 		ALTER TABLE leases DROP COLUMN heartbeat_at;
 		ALTER TABLE leases DROP COLUMN stage;
@@ -55,6 +55,7 @@ func TestMigrationReadAll(t *testing.T) {
 		ALTER TABLE jobs DROP COLUMN retries;
 		ALTER TABLE leases DROP COLUMN retry;
 		ALTER TABLE tasks DROP COLUMN pending_since;
+		DROP TABLE throughput;
 		PRAGMA user_version = 4`)
 	require.NoError(t, err)
 	require.NoError(t, f.s.Close())

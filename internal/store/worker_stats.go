@@ -13,7 +13,8 @@ import (
 // transaction that ends a lease, so they always agree with task outcomes:
 //   - a completed task (CompleteTranscribe, AcceptPrepare) counts by kind,
 //     with its compute time, its audio (transcribe), and its job if it is
-//     the worker's first completed task in that job;
+//     the worker's first completed task in that job; a transcribe task's
+//     audio also counts in the fleet's throughput (throughput.go);
 //   - a lease ended failed (Fail) or expired (ExpireLeases) counts as a
 //     failure or an expiry;
 //   - a release or a cancellation (worker rejected, job failed) counts as
@@ -80,6 +81,9 @@ func countCompletion(ctx context.Context, tx *sql.Tx, l leaseRow, computeMS int6
 	case api.KindTranscribe:
 		d.transcribe, d.transcribeMS = 1, computeMS
 		d.audioMS = span * 1000 / canonicalSampleRate
+		if err := countThroughput(ctx, tx, l.QueueID, d.audioMS, now); err != nil {
+			return err
+		}
 	}
 	if err := clearFailureStreak(ctx, tx, l.WorkerID); err != nil {
 		return err

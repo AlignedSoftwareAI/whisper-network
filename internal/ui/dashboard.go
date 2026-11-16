@@ -9,7 +9,6 @@ import (
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
-	"github.com/deweysasser/whisper-network/internal/media"
 	"github.com/deweysasser/whisper-network/internal/store"
 	"github.com/deweysasser/whisper-network/internal/version"
 )
@@ -248,35 +247,13 @@ func isOnline(w *store.Worker, now time.Time) bool {
 	return w.State == api.WorkerActive && w.LastSeenAt != nil && now.Sub(*w.LastSeenAt) <= onlineWindow
 }
 
-// audioHoursPerHour is the audio duration of jobs completed in the last
-// throughputWindow, per hour. Jobs are counted whole when they complete.
+// audioHoursPerHour is the audio transcribed by tasks completed in the last
+// throughputWindow, per hour. Each task counts when it completes, whatever
+// later happens to its job (#87).
 func (u *UI) audioHoursPerHour(ctx context.Context, now time.Time) (float64, error) {
-	st := u.srv.Store()
-	qs, err := st.ListQueues(ctx)
+	total, _, err := u.srv.Store().ThroughputSince(ctx, now.Add(-throughputWindow))
 	if err != nil {
 		return 0, err
 	}
-	since := now.Add(-throughputWindow)
-	var samples int64
-	for _, q := range qs {
-		f := store.JobFilter{QueueID: q.ID, States: []api.JobState{api.JobDone}, Since: since, Limit: 1000}
-		for {
-			jobs, next, err := st.ListJobs(ctx, f)
-			if err != nil {
-				return 0, err
-			}
-			for i := range jobs {
-				j := &jobs[i]
-				if j.Canonical != nil && j.CompletedAt != nil && !j.CompletedAt.Before(since) {
-					samples += j.Canonical.Samples
-				}
-			}
-			if next == "" {
-				break
-			}
-			f.Cursor = next
-		}
-	}
-	hours := float64(samples) / media.SampleRate / 3600
-	return hours / throughputWindow.Hours(), nil
+	return total.Audio.Hours() / throughputWindow.Hours(), nil
 }
