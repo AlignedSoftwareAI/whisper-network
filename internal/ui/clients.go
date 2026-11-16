@@ -119,55 +119,97 @@ func (u *UI) handleRevokeClient(w http.ResponseWriter, r *http.Request, rc *reqC
 	return nil
 }
 
-// clientView is the edit page for one client.
+// clientView is one client's page (#60): its details, recent activity
+// and, unless it is revoked, its permissions as an editable matrix.
 type clientView struct {
 	Client         api.Client
+	CreatedBy      ref
+	Activity       []auditRow // the client's latest audit entries as actor
 	Grants         grantMatrix
+	CanEdit        bool // not revoked
 	Saved          bool
 	Added, Removed int
+}
+
+// clientActivity is how many of a client's audit entries its page shows.
+const clientActivity = 20
+
+// viewableClient loads the client in the path for a client admin, revoked
+// or not.
+func (u *UI) viewableClient(r *http.Request, rc *reqCtx) (*store.Client, *api.Client, error) {
+	id := r.PathValue("id")
+	if !rc.can(auth.ActRevokeClient, auth.Resource{ClientID: id}) {
+		return nil, nil, u.deny(r, rc, "client_admin required")
+	}
+	c, err := u.srv.Store().ClientByID(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil, errNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	ac, err := u.srv.Ops().ClientAPI(r.Context(), c)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, ac, nil
 }
 
 // editableClient loads a client for editing: client_admin, and not revoked
 // (a revoked token can never be used again, so its grants are moot). Which
 // grants the editor may change is auth.CanGrantTo's business, not this
 // gate's.
-func (u *UI) editableClient(r *http.Request, rc *reqCtx) (*api.Client, error) {
-	id := r.PathValue("id")
-	if !rc.can(auth.ActRevokeClient, auth.Resource{ClientID: id}) {
-		return nil, u.deny(r, rc, "client_admin required")
-	}
-	c, err := u.srv.Store().ClientByID(r.Context(), id)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil, errNotFound
-	}
+func (u *UI) editableClient(r *http.Request, rc *reqCtx) (*store.Client, *api.Client, error) {
+	c, ac, err := u.viewableClient(r, rc)
 	if err != nil {
-		return nil, err
-	}
-	ac, err := u.srv.Ops().ClientAPI(r.Context(), c)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if ac.RevokedAt != nil {
-		return nil, badRequest("This client is revoked; its permissions can no longer be changed.")
+		return nil, nil, badRequest("This client is revoked; its permissions can no longer be changed.")
 	}
-	return ac, nil
+	return c, ac, nil
 }
 
-func (u *UI) clientEditView(ctx context.Context, rc *reqCtx, c *api.Client) (*clientView, error) {
-	qs, err := u.srv.Store().ListQueues(ctx)
+func (u *UI) clientPageView(ctx context.Context, rc *reqCtx, sc *store.Client, c *api.Client) (*clientView, error) {
+	v := &clientView{Client: *c, CanEdit: c.RevokedAt == nil}
+	es, err := u.srv.Store().QueryAudit(ctx, store.AuditFilter{Actor: sc.Principal(), Limit: clientActivity})
 	if err != nil {
 		return nil, err
 	}
-	return &clientView{Client: *c, Grants: editGrantMatrix(rc.P.Principal, auth.KindClient, qs, c.Grants)}, nil
+	var ids labelIDs
+	ids.principal(sc.CreatedBy)
+	for _, e := range es {
+		ids.principal(e.Target)
+	}
+	lb, err := u.labels(ctx, rc, ids)
+	if err != nil {
+		return nil, err
+	}
+	v.CreatedBy = lb.principal(sc.CreatedBy)
+	for _, e := range es {
+		row := auditRow{AuditEntry: e}
+		if e.Target != "" {
+			row.TargetRef = lb.principal(e.Target)
+		}
+		v.Activity = append(v.Activity, row)
+	}
+	if v.CanEdit {
+		qs, err := u.srv.Store().ListQueues(ctx)
+		if err != nil {
+			return nil, err
+		}
+		v.Grants = editGrantMatrix(rc.P.Principal, auth.KindClient, qs, c.Grants)
+	}
+	return v, nil
 }
 
-// handleClient shows a client's permissions as an editable matrix.
+// handleClient shows a client: details, activity and editable permissions.
 func (u *UI) handleClient(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
-	c, err := u.editableClient(r, rc)
+	sc, c, err := u.viewableClient(r, rc)
 	if err != nil {
 		return err
 	}
-	v, err := u.clientEditView(r.Context(), rc, c)
+	v, err := u.clientPageView(r.Context(), rc, sc, c)
 	if err != nil {
 		return err
 	}
@@ -182,7 +224,7 @@ func (u *UI) handleClient(w http.ResponseWriter, r *http.Request, rc *reqCtx) er
 // The whole difference is applied and audited in one transaction by
 // server.Ops.UpdateGrants.
 func (u *UI) handleUpdateClient(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
-	c, err := u.editableClient(r, rc)
+	_, c, err := u.editableClient(r, rc)
 	if err != nil {
 		return err
 	}
@@ -209,7 +251,7 @@ func (u *UI) handleUpdateClient(w http.ResponseWriter, r *http.Request, rc *reqC
 	if c, err = u.srv.Ops().ClientAPI(r.Context(), stored); err != nil {
 		return err
 	}
-	v, err := u.clientEditView(r.Context(), rc, c)
+	v, err := u.clientPageView(r.Context(), rc, stored, c)
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/obs"
+	"github.com/deweysasser/whisper-network/internal/store"
 )
 
 // eligibleWindow is how recently a worker must have been seen to count in
@@ -42,6 +43,7 @@ func (s *Server) refreshStats(ctx context.Context) {
 	for state, n := range st.Workers {
 		snap.Workers = append(snap.Workers, obs.WorkerCount{State: string(state), N: n})
 	}
+	snap.FleetSlots = fleetSlots(store.FleetCapacity(ws, s.now(), eligibleWindow, s.st.PrepareMinSandbox()))
 	for i := range ws {
 		wk := &ws[i]
 		if wk.State == api.WorkerRejected || wk.State == api.WorkerPending {
@@ -79,4 +81,19 @@ func (s *Server) refreshStats(ctx context.Context) {
 		s.log.Warn().Err(err).Msg("stats refresh: failed job stats failed")
 	}
 	s.metrics.SetSnapshot(snap)
+}
+
+// fleetSlots is the whisper_fleet_slots series of c: in use, available and
+// deferred slots per kind, and paused slots (kind "all").
+func fleetSlots(c store.Capacity) []obs.FleetSlots {
+	var out []obs.FleetSlots
+	for _, k := range []struct {
+		kind string
+		n    store.SlotCount
+	}{{"all", c.All}, {"transcribe", c.Transcribe}, {"prepare", c.Prepare}} {
+		out = append(out, obs.FleetSlots{State: "in_use", Kind: k.kind, N: k.n.InUse},
+			obs.FleetSlots{State: "available", Kind: k.kind, N: k.n.Available()},
+			obs.FleetSlots{State: "deferred", Kind: k.kind, N: k.n.Deferred})
+	}
+	return append(out, obs.FleetSlots{State: "paused", Kind: "all", N: c.Paused})
 }

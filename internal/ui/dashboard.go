@@ -35,6 +35,8 @@ type statsView struct {
 	ShareSpan                     time.Duration // 0: since server start
 	Generated                     time.Time
 	Versions                      fleetVersions
+	// Capacity is the fleet's slots in use and free (#81).
+	Capacity store.Capacity
 }
 
 // fleetVersions is the "Fleet versions" tile: the distinct versions run by
@@ -106,6 +108,9 @@ type queueStatRow struct {
 	BacklogCost                              float64
 	OldestPending                            time.Duration
 	EligibleWorkers                          int
+	// EligibleSlots and EligibleBusy are the slots of the eligible workers
+	// and how many are in use (#81).
+	EligibleSlots, EligibleBusy int
 	// Involved queues are backlogged, running or recently served; the
 	// configured share is their weight over the involved queues' total,
 	// which is what the scheduler converges to (§8.2).
@@ -167,7 +172,8 @@ func (u *UI) stats(ctx context.Context) (*statsView, error) {
 	index := make(map[string]*queueStatRow, len(rows))
 	for i, q := range snap.Queues {
 		rows[i] = queueStatRow{Name: q.Name, Weight: q.Weight, PendingTasks: q.PendingTasks,
-			BacklogCost: q.BacklogCost, OldestPending: q.OldestPending, EligibleWorkers: q.EligibleWorkers}
+			BacklogCost: q.BacklogCost, OldestPending: q.OldestPending, EligibleWorkers: q.EligibleWorkers,
+			EligibleSlots: q.EligibleSlots, EligibleBusy: q.EligibleSlotsBusy}
 		index[q.Name] = &rows[i]
 	}
 	for _, j := range snap.Jobs {
@@ -230,6 +236,7 @@ func (u *UI) stats(ctx context.Context) (*statsView, error) {
 		}
 	}
 	out.Versions = countVersions(workers, u.srv.Version())
+	out.Capacity = store.FleetCapacity(workers, now, onlineWindow, st.PrepareMinSandbox())
 	if out.AudioHoursPerHour, err = u.audioHoursPerHour(ctx, now); err != nil {
 		return nil, err
 	}

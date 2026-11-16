@@ -53,6 +53,9 @@ type QueueStats struct {
 	// EligibleWorkers counts active workers seen within the window given to
 	// Stats that hold process on this queue (or on "*").
 	EligibleWorkers int
+	// EligibleSlots and EligibleSlotsBusy are those workers' slots and
+	// their busy slots at the last heartbeat (DESIGN.md §6.3).
+	EligibleSlots, EligibleSlotsBusy int
 }
 
 // Stats takes a snapshot of job, task, queue, worker and storage gauges.
@@ -146,18 +149,20 @@ func (s *Store) Stats(ctx context.Context, seenWithin time.Duration) (*Stats, er
 			st.Workers[state] = n
 			return nil
 		}},
-		{`SELECT q.id, COUNT(DISTINCT w.id) FROM queues q JOIN grants g
-			ON g.role = ? AND (g.scope = '*' OR g.scope = 'queue:' || q.id)
-			JOIN workers w ON g.principal = 'worker:' || w.id
-			WHERE w.state = 'active' AND w.last_seen_at >= ? GROUP BY q.id`,
-			[]any{string(api.RoleProcess), toMS(now.Add(-seenWithin))}, func(r *sql.Rows) error {
+		{`SELECT q.id, COUNT(*), COALESCE(SUM(w.slots), 0),
+			COALESCE(SUM(MIN(MAX(COALESCE(json_extract(w.gauges, '$.slots_busy'), 0), 0), w.slots)), 0)
+			FROM queues q JOIN workers w ON w.state = 'active' AND w.last_seen_at >= ?
+			AND EXISTS (SELECT 1 FROM grants g WHERE g.principal = 'worker:' || w.id AND g.role = ?
+				AND (g.scope = '*' OR g.scope = 'queue:' || q.id))
+			GROUP BY q.id`,
+			[]any{toMS(now.Add(-seenWithin)), string(api.RoleProcess)}, func(r *sql.Rows) error {
 				var id int64
-				var n int
-				if err := r.Scan(&id, &n); err != nil {
+				var n, slots, busy int
+				if err := r.Scan(&id, &n, &slots, &busy); err != nil {
 					return err
 				}
 				if q := queues[id]; q != nil {
-					q.EligibleWorkers = n
+					q.EligibleWorkers, q.EligibleSlots, q.EligibleSlotsBusy = n, slots, busy
 				}
 				return nil
 			}},

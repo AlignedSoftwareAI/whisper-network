@@ -29,6 +29,16 @@ type Snapshot struct {
 	// RetryableFailedJobs counts failed jobs whose media is still kept, so
 	// they can be retried.
 	RetryableFailedJobs int
+	// FleetSlots is the fleet's capacity (whisper_fleet_slots).
+	FleetSlots []FleetSlots
+}
+
+// FleetSlots is the number of worker slots in one state ("in_use",
+// "available", "deferred", "paused") able to take one kind of task ("all",
+// "transcribe", "prepare").
+type FleetSlots struct {
+	State, Kind string
+	N           int
 }
 
 // JobCount is the number of jobs in one queue and state.
@@ -157,6 +167,14 @@ func (m *Metrics) writeSnapshot(w io.Writer) {
 	sort.Slice(ws, func(i, j int) bool { return ws[i].State < ws[j].State })
 	for _, c := range ws {
 		g("whisper_workers", float64(c.N), "state", c.State)
+	}
+
+	slots := append([]FleetSlots(nil), s.FleetSlots...)
+	sort.Slice(slots, func(i, j int) bool {
+		return less2(slots[i].Kind, slots[i].State, slots[j].Kind, slots[j].State)
+	})
+	for _, c := range slots {
+		g("whisper_fleet_slots", float64(c.N), "kind", c.Kind, "state", c.State)
 	}
 
 	m.writeWorkers(w, s.WorkerInfo)

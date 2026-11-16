@@ -54,7 +54,7 @@ func TestSecurityHeaders(t *testing.T) {
 		// No inline script or style anywhere: the CSP would block it.
 		assert.NotContains(t, body, "<style", p)
 		assert.NotContains(t, body, "style=", p)
-		assert.NotContains(t, strings.ReplaceAll(body, `<script src="/ui/static/htmx.min.js?v=`, ""), "<script", p)
+		assert.NotContains(t, strings.NewReplacer(`<script src="/ui/static/htmx.min.js?v=`, "", `<script src="/ui/static/ui.js?v=`, "").Replace(body), "<script", p)
 		assert.NotContains(t, body, "hx-on", p)
 		assert.Contains(t, body, `"allowEval":false`, p)
 	}

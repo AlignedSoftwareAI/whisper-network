@@ -91,10 +91,12 @@ func TestJobWorkers(t *testing.T) {
 			br := e.login(name)
 			resp, body := br.get("/ui/queues/public")
 			require.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Contains(t, body, "<th>Workers</th>")
+			assert.Contains(t, body, ">Workers<button")
 			assert.Contains(t, body, linkA, name)
-			assert.Equal(t, 2, strings.Count(body, linkB), "%s: wb runs one job and finished the other", name)
-			assert.Contains(t, body, ">box-b</a>", name)
+			jobs := body[strings.Index(body, `id="jobs"`):]
+			jobs = jobs[:strings.Index(jobs, "</table>")]
+			assert.Equal(t, 2, strings.Count(jobs, linkB), "%s: wb runs one job and finished the other", name)
+			assert.Contains(t, body, `>box-b <span class="muted">(`, name)
 			assert.Contains(t, body, escaped, name)
 			assert.NotContains(t, body, "<script>alert", name)
 			assert.False(t, strings.Contains(body, `<span class="muted">running</span>`) ||
@@ -175,13 +177,14 @@ func TestJobWorkersAfterExpiry(t *testing.T) {
 	e.claim(wa, waTok)
 	br := e.login("root")
 	_, body := br.get("/ui/jobs/" + j.ID)
-	assert.Contains(t, body, ">alpha</a>")
+	assert.Contains(t, body, `>alpha <span class="muted">(`)
 
 	e.clk.Advance(time.Hour)
 	_, body = br.get("/ui/jobs/" + j.ID)
 	assert.NotContains(t, body, "Running tasks")
 	_, body = br.get("/ui/queues/public")
-	assert.NotContains(t, body, ">alpha</a>")
+	jobs := body[strings.Index(body, `id="jobs"`):]
+	assert.NotContains(t, jobs[:strings.Index(jobs, "</table>")], `>alpha <span class="muted">(`)
 	_, body = br.get("/ui/workers/" + wa)
 	assert.NotContains(t, body, "/ui/jobs/"+j.ID)
 }

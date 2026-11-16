@@ -1,14 +1,14 @@
 {{define "content"}}
 {{$j := .Data.Job}}
-<h1>Job <code>{{$j.ID}}</code></h1>
+<h1>Job {{with .Data.Name}}{{.}} <span class="muted small"><code>{{$j.ID}}</code></span>{{else}}<code>{{$j.ID}}</code>{{end}}</h1>
 <section class="card">
   <dl class="facts">
     <dt>Queue</dt><dd><a href="/ui/queues/{{$j.Queue}}">{{$j.Queue}}</a></dd>
-    <dt>State</dt><dd><span class="badge job-{{$j.State}}">{{$j.State}}</span></dd>
-    {{with $j.Error}}<dt>Error</dt><dd class="error">{{.}}</dd>{{end}}
+    <dt>State</dt><dd><span class="badge job-{{$j.State}}" title="{{vhelp "job" $j.State}}">{{$j.State}}</span></dd>
+    {{with .Data.Error}}<dt>Error</dt><dd class="error">{{template "segs" .}}</dd>{{end}}
     <dt>Label</dt><dd>{{$j.Label}}</dd>
     {{with $j.Source}}<dt>Source</dt><dd><span class="wrap">{{.}}</span></dd>{{end}}
-    <dt>Submitted by</dt><dd>{{with .Data.Job.SubmittedBy}}{{if .Name}}{{.Name}} <span class="muted">({{.Kind}} <code>{{.ID}}</code>)</span>{{else}}{{.Kind}} <code>{{.ID}}</code>{{end}}{{else}}<code>{{.Data.Owner}}</code>{{end}}</dd>
+    <dt>Submitted by</dt><dd>{{with .Data.Submitter}}{{template "ref" .}}{{else}}{{with .Data.Job.SubmittedBy}}{{if .Name}}{{.Name}} <span class="muted">({{.Kind}} <code>{{.ID}}</code>)</span>{{else}}{{.Kind}} <code>{{.ID}}</code>{{end}}{{else}}<code>{{.Data.Owner}}</code>{{end}}{{end}}</dd>
     <dt>Weight</dt><dd>{{$j.Weight}}</dd>
     <dt>Model</dt><dd>{{$j.Model}} · {{$j.Language}}</dd>
     {{with $j.Prompt}}<dt>Prompt</dt><dd class="wrap">{{.}}</dd>{{end}}
@@ -53,15 +53,39 @@
   <h2>Running tasks</h2>
   <div class="scroll">
   <table class="data">
-    <thead><tr><th class="n">#</th><th>Kind</th><th>Worker</th><th class="n">Lease age</th><th>Last heartbeat</th><th class="n">Attempt</th></tr></thead>
+    <thead><tr>{{template "th" (col "task.seq@run" "n")}}{{template "th" (col "task.kind@run")}}{{template "th" (col "task.worker@run")}}{{template "th" (col "task.leaseage" "n")}}{{template "th" (col "task.heartbeat")}}{{template "th" (col "task.attempt" "n")}}</tr></thead>
     <tbody>
     {{range .}}
     <tr>
       <td class="n">{{.Seq}}</td><td>{{.Kind}}</td>
-      <td>{{with .Worker}}<a href="/ui/workers/{{.ID}}" title="{{.ID}}">{{.Name}}</a>{{else}}<span class="muted">running</span>{{end}}</td>
+      <td>{{with .Worker}}{{template "ref" .}}{{else}}<span class="muted">running</span>{{end}}</td>
       <td class="n">{{dur .Age}}</td>
       <td>{{if .HeartbeatAt}}{{ago .HeartbeatAt}}{{else}}<span class="muted">none yet</span>{{end}}</td>
       <td class="n">{{.Attempt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+{{end}}
+
+{{with .Data.Waiting}}
+<section class="card" id="waiting">
+  <h2>Waiting and failed tasks</h2>
+  <div class="scroll">
+  <table class="data waiting">
+    <thead><tr>{{template "th" (col "task.seq@wait" "n")}}{{template "th" (col "task.kind@wait")}}{{template "th" (col "task.state")}}{{template "th" (col "task.waiting" "n")}}{{template "th" (col "task.attempts" "n")}}{{template "th" (col "task.lastfail")}}{{template "th" (col "task.why")}}</tr></thead>
+    <tbody>
+    {{range .}}
+    <tr>
+      <td class="n">{{.Seq}}</td>
+      <td>{{.Kind}}{{if eq (print .Kind) "transcribe"}} <span class="muted small">{{secs .StartS}} – {{secs .EndS}}</span>{{end}}</td>
+      <td><span class="badge task-{{.State}}" title="{{vhelp "task" .State}}">{{.State}}</span></td>
+      <td class="n">{{if eq (print .State) "pending"}}{{dur .Waiting}}{{else}}—{{end}}</td>
+      <td class="n">{{.Attempts}}</td>
+      <td class="wrap small">{{with .LastError}}{{template "segs" .}}{{end}}{{with .LastWorker}} <span class="muted">on</span> {{template "ref" .}}{{end}}{{if not (or .LastError .LastWorker)}}<span class="muted">—</span>{{end}}</td>
+      <td class="small">{{if eq (print .State) "pending"}}{{with .Reasons}}<ul class="reasons">{{range .}}<li class="warn">{{.}}</li>{{end}}</ul>{{else}}<span class="muted">waiting its turn</span>{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
     </tr>
     {{end}}
     </tbody>
@@ -74,13 +98,13 @@
   <h2>Finished tasks</h2>
   <div class="scroll">
   <table class="data">
-    <thead><tr><th class="n">#</th><th>Kind</th><th>Audio</th><th>Worker</th><th>Engine</th><th class="n">Compute</th></tr></thead>
+    <thead><tr>{{template "th" (col "task.seq" "n")}}{{template "th" (col "task.kind")}}{{template "th" (col "task.audio")}}{{template "th" (col "task.worker")}}{{template "th" (col "task.engine")}}{{template "th" (col "task.compute" "n")}}</tr></thead>
     <tbody>
     {{range .Data.Tasks}}
     <tr>
       <td class="n">{{.Seq}}</td><td>{{.Kind}}</td>
       <td>{{if eq (print .Kind) "transcribe"}}{{secs .StartS}} – {{secs .EndS}}{{else}}—{{end}}</td>
-      <td><code title="{{.WorkerID}}">{{short .WorkerID}}</code></td>
+      <td>{{template "ref" .Worker}}</td>
       <td>{{.EngineVersion}}</td>
       <td class="n">{{secs .ComputeS}}</td>
     </tr>

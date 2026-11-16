@@ -14,13 +14,6 @@ import (
 // worker_admin over the worker); anyone else who can see the job sees only
 // that its tasks are running (DESIGN.md §5.3).
 
-// workerLink is a worker named on a job page, linking to the worker's page
-// (/ui/workers/<id>).
-type workerLink struct {
-	ID   string
-	Name string
-}
-
 // refName names a worker the way the workers pages do (workerName).
 func refName(w store.WorkerRef) string {
 	return workerName(&store.Worker{ID: w.ID, Facts: api.WorkerFacts{Hostname: w.Hostname, Description: w.Description}})
@@ -37,18 +30,22 @@ func (rc *reqCtx) seesWorker(queue string, w store.WorkerRef) bool {
 // that completed its tasks. Workers the principal may not see are only
 // counted, as Running for live leases (completed ones are omitted).
 type jobWorkers struct {
-	Workers []workerLink
+	Workers []ref
 	Running int // live leases whose worker is not shown
 }
 
 // jobRow is one row of a queue's job table.
 type jobRow struct {
 	api.Job
+	Ref     ref // the job, named by its label (#58)
 	Workers jobWorkers
+	// Waiting is how long the job's oldest pending task has waited, set
+	// only while it has pending tasks and none running (#54).
+	Waiting time.Duration
 }
 
-// queueJobRows builds the job table rows for jobs on queue: two indexed
-// queries for the whole page, whatever its length.
+// queueJobRows builds the job table rows for jobs on queue: a fixed number
+// of indexed queries for the whole page, whatever its length.
 func (u *UI) queueJobRows(ctx context.Context, rc *reqCtx, queue string, jobs []store.Job) ([]jobRow, error) {
 	docs := u.srv.JobDocuments(ctx, rc.P.Principal, jobs)
 	rows := make([]jobRow, len(jobs))
@@ -76,7 +73,7 @@ func (u *UI) queueJobRows(ctx context.Context, rc *reqCtx, queue string, jobs []
 			r.Workers.Running++
 		case !seen[[2]string{l.JobID, l.Worker.ID}]:
 			seen[[2]string{l.JobID, l.Worker.ID}] = true
-			r.Workers.Workers = append(r.Workers.Workers, workerLink{ID: l.Worker.ID, Name: refName(l.Worker)})
+			r.Workers.Workers = append(r.Workers.Workers, workerRef(l.Worker))
 		}
 	}
 	done, err := st.CompletedTaskWorkers(ctx, finished)
@@ -86,7 +83,23 @@ func (u *UI) queueJobRows(ctx context.Context, rc *reqCtx, queue string, jobs []
 	for _, jw := range done {
 		if rc.seesWorker(queue, jw.Worker) {
 			r := byID[jw.JobID]
-			r.Workers.Workers = append(r.Workers.Workers, workerLink{ID: jw.Worker.ID, Name: refName(jw.Worker)})
+			r.Workers.Workers = append(r.Workers.Workers, workerRef(jw.Worker))
+		}
+	}
+	ids := labelIDs{jobs: append(active, finished...)}
+	lb, err := u.labels(ctx, rc, ids)
+	if err != nil {
+		return nil, err
+	}
+	since, err := st.JobsPendingSince(ctx, active)
+	if err != nil {
+		return nil, err
+	}
+	now := u.srv.Now()
+	for i := range rows {
+		rows[i].Ref = lb.job(rows[i].ID)
+		if t, ok := since[rows[i].ID]; ok && rows[i].Tasks.Leased == 0 {
+			rows[i].Waiting = max(now.Sub(t), 0)
 		}
 	}
 	return rows, nil
@@ -97,7 +110,7 @@ func (u *UI) queueJobRows(ctx context.Context, rc *reqCtx, queue string, jobs []
 type runningRow struct {
 	Seq         int
 	Kind        api.TaskKind
-	Worker      *workerLink
+	Worker      *ref
 	Age         time.Duration
 	HeartbeatAt *time.Time
 	Attempt     int
@@ -118,7 +131,8 @@ func (u *UI) runningRows(ctx context.Context, rc *reqCtx, j *store.Job) ([]runni
 		out[i] = runningRow{Seq: l.Seq, Kind: l.Kind, Age: now.Sub(l.CreatedAt), HeartbeatAt: l.HeartbeatAt,
 			Attempt: l.Attempt}
 		if rc.seesWorker(j.QueueName, l.Worker) {
-			out[i].Worker = &workerLink{ID: l.Worker.ID, Name: refName(l.Worker)}
+			wr := workerRef(l.Worker)
+			out[i].Worker = &wr
 		}
 	}
 	return out, nil
@@ -126,6 +140,7 @@ func (u *UI) runningRows(ctx context.Context, rc *reqCtx, j *store.Job) ([]runni
 
 // workerLease is a live lease on the workers page.
 type workerLease struct {
+	Job   ref // named by its label (#58)
 	JobID string
 	Seq   int
 	Kind  api.TaskKind
@@ -141,14 +156,22 @@ func (u *UI) workerLeases(ctx context.Context, rc *reqCtx, workerIDs []string) (
 		return nil, nil, err
 	}
 	now := u.srv.Now()
+	var ids labelIDs
+	for _, l := range live {
+		ids.job(l.JobID)
+	}
+	lb, err := u.labels(ctx, rc, ids)
+	if err != nil {
+		return nil, nil, err
+	}
 	shown, hidden := map[string][]workerLease{}, map[string]int{}
 	for _, l := range live {
 		if !rc.can(auth.ActViewJob, auth.Resource{Queue: l.QueueName, OwnerID: l.ClientID}) {
 			hidden[l.Worker.ID]++
 			continue
 		}
-		shown[l.Worker.ID] = append(shown[l.Worker.ID], workerLease{JobID: l.JobID, Seq: l.Seq, Kind: l.Kind,
-			Age: now.Sub(l.CreatedAt)})
+		shown[l.Worker.ID] = append(shown[l.Worker.ID], workerLease{Job: lb.job(l.JobID), JobID: l.JobID, Seq: l.Seq,
+			Kind: l.Kind, Age: now.Sub(l.CreatedAt)})
 	}
 	return shown, hidden, nil
 }

@@ -3,10 +3,10 @@
 <p class="small"><a href="/ui/workers">← Workers</a></p>
 <header class="row title">
   <h1>{{$w.Name}}</h1>
-  <span class="badge state-{{$w.State}}">{{$w.State}}</span>
-  {{if $w.PauseReason}}<span class="badge auto-paused">auto-paused</span>{{end}}
-  {{if $w.Online}}<span class="badge online">online</span>{{end}}
-  {{if and $w.Online $w.Gauges}}{{if $w.Gauges.DeferredForLoad}}<span class="badge host-busy">busy host</span>{{end}}{{end}}
+  <span class="badge state-{{$w.State}}" title="{{vhelp "worker" $w.State}}">{{$w.State}}</span>
+  {{if $w.PauseReason}}<span class="badge auto-paused" title="{{vhelp "badge" "auto"}}">auto-paused</span>{{end}}
+  {{if $w.Online}}<span class="badge online" title="{{vhelp "badge" "online"}}">online</span>{{end}}
+  {{if and $w.Online $w.Gauges}}{{if $w.Gauges.DeferredForLoad}}<span class="badge host-busy" title="{{vhelp "badge" "busyhost"}}">busy host</span>{{end}}{{end}}
 </header>
 {{with $w.PauseReason}}<p class="notice auto-paused">Paused automatically by the circuit breaker: {{.}}. It finishes its current tasks but takes no new ones until resumed; resuming clears the failure streak.</p>{{end}}
 
@@ -104,7 +104,7 @@
 <section class="card">
   <h2>Current leases</h2>
   <p>
-    {{range .Leases}}<span class="chip"><a href="/ui/jobs/{{.JobID}}" title="{{.JobID}}"><code>{{short .JobID}}</code></a> #{{.Seq}} {{.Kind}} · {{dur .Age}}</span>
+    {{range .Leases}}<span class="chip">{{template "ref" .Job}} #{{.Seq}} {{.Kind}} · {{dur .Age}}</span>
     {{else}}{{if not .OtherLeases}}<span class="muted">none</span>{{end}}{{end}}
     {{with .OtherLeases}}<span class="muted">{{.}} on jobs you cannot view</span>{{end}}
   </p>

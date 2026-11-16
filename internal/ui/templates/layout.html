@@ -9,6 +9,7 @@
 <title>{{.Title}} · whisper-network</title>
 <link rel="stylesheet" href="{{.CSS}}">
 <script src="{{.HTMX}}" defer></script>
+<script src="{{.JS}}" defer></script>
 </head>
 <body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
 <header class="top">
@@ -39,6 +40,21 @@
 </html>
 {{- end}}
 
+{{/* th is a column header that explains itself (#79): the help text is
+     the header's tooltip and, through the ⓘ button (ui.js toggles it), a
+     popover that keyboards, touch screens and screen readers reach. Its
+     argument is a column (col, colText). */}}
+{{define "th"}}<th scope="col"{{with .Class}} class="{{.}}"{{end}} title="{{.Help}}">{{.Label}}<button type="button" class="colhelp" aria-label="About {{.Label}}" aria-describedby="{{.ID}}" aria-controls="{{.ID}}" aria-expanded="false">ⓘ</button><span class="colhelp-text" id="{{.ID}}" role="tooltip" hidden>{{.Help}}{{with .More}} <a href="{{.}}" rel="noopener">more…</a>{{end}}</span></th>{{end}}
+
+{{/* ref names a worker, job or client (#57, #58, #60; labels.go): its name
+     with the short id after it, the full id in the tooltip, linked to its
+     page where the viewer may open it. */}}
+{{define "ref"}}{{if .Href}}<a class="ref" href="{{.Href}}"{{with .Title}} title="{{.}}"{{end}}>{{template "ref-body" .}}</a>{{else}}<span class="ref{{if .Muted}} muted{{end}}"{{with .Title}} title="{{.}}"{{end}}>{{template "ref-body" .}}</span>{{end}}{{end}}
+{{define "ref-body"}}{{if .Name}}{{.Name}}{{with .Short}} <span class="muted">({{.}})</span>{{end}}{{else}}<code>{{.Short}}</code>{{end}}{{with .Note}} <span class="muted">({{.}})</span>{{end}}{{end}}
+
+{{/* segs is text with the workers it names rendered as refs (labeler.withWorkers). */}}
+{{define "segs"}}{{range .}}{{with .Ref}}{{template "ref" .}}{{else}}{{.Text}}{{end}}{{end}}{{end}}
+
 {{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
 
 {{define "revoke"}}
@@ -64,7 +80,7 @@
   {{if .Rows}}
   <div class="scroll">
   <table class="data grant-matrix">
-    <thead><tr><th scope="col">Queue</th>{{range .Columns}}<th scope="col" class="c">{{.Label}}<div class="muted small help">{{.Help}}</div></th>{{end}}</tr></thead>
+    <thead><tr>{{template "th" (col "matrix.queue")}}{{range .Columns}}{{template "th" (colText (print "role-" .Role) .Label .Help "c")}}{{end}}</tr></thead>
     <tbody>
     {{range .Rows}}{{$q := .Queue}}
     <tr><th scope="row">{{$q}}</th>{{range $i, $c := .Cells}}<td class="c">{{if $c.Allowed}}<input type="checkbox" name="grant" value="{{$c.Value}}"{{if $c.Checked}} checked{{end}} aria-label="{{(index $.Columns $i).Label}} on {{$q}}">{{else if $c.Checked}}<input type="checkbox" checked disabled title="You cannot change this" aria-label="{{(index $.Columns $i).Label}} on {{$q}} (held; you cannot change it)">{{else}}<span class="muted" title="You cannot grant this">—</span>{{end}}</td>{{end}}</tr>

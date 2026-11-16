@@ -6,10 +6,10 @@
   <p class="summary"><strong>{{$v.Summary}}</strong></p>
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>Job</th><th>Outcome</th></tr></thead>
+    <thead><tr>{{template "th" (col "bulk.job")}}{{template "th" (col "bulk.outcome")}}</tr></thead>
     <tbody>
     {{range $v.Results}}
-    <tr><td><a href="/ui/jobs/{{.JobID}}" title="{{.JobID}}"><code>{{short .JobID}}</code></a></td>
+    <tr><td>{{template "ref" (index $v.Refs .JobID)}}</td>
       <td>{{.Outcome}}{{with .Reason}}: {{.}}{{end}}</td></tr>
     {{end}}
     </tbody>

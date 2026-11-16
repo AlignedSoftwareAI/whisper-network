@@ -16,9 +16,15 @@ const auditPageSize = 50
 // auditView is one page of the audit log, newest first, with the filter
 // that selected it (echoed into the filter form).
 type auditView struct {
-	Entries  []store.AuditEntry
+	Entries  []auditRow
 	Filter   auditFilterForm
 	NextPage string
+}
+
+// auditRow is an entry with its actor and target named (#57, #58, #60).
+type auditRow struct {
+	store.AuditEntry
+	ActorRef, TargetRef ref
 }
 
 // auditFilterForm holds the filter fields as typed.
@@ -45,7 +51,23 @@ func (u *UI) handleAudit(w http.ResponseWriter, r *http.Request, rc *reqCtx) err
 	if err != nil {
 		return err
 	}
-	v := auditView{Entries: es, Filter: auditFilterForm{Action: q.Get("action"), Actor: q.Get("actor"),
+	var ids labelIDs
+	for _, e := range es {
+		ids.principal(e.Actor)
+		ids.principal(e.Target)
+	}
+	lb, err := u.labels(r.Context(), rc, ids)
+	if err != nil {
+		return err
+	}
+	rows := make([]auditRow, len(es))
+	for i, e := range es {
+		rows[i] = auditRow{AuditEntry: e, ActorRef: lb.principal(e.Actor)}
+		if e.Target != "" {
+			rows[i].TargetRef = lb.principal(e.Target)
+		}
+	}
+	v := auditView{Entries: rows, Filter: auditFilterForm{Action: q.Get("action"), Actor: q.Get("actor"),
 		Target: q.Get("target"), Since: q.Get("since"), Until: q.Get("until")}}
 	if len(es) == auditPageSize {
 		next := url.Values{}

@@ -3,7 +3,7 @@
 <section class="card">
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>Name</th><th>Description</th><th class="n">Weight</th><th class="n">Upload cap</th><th>Jobs</th></tr></thead>
+    <thead><tr>{{template "th" (col "queues.name")}}{{template "th" (col "queues.desc")}}{{template "th" (col "queues.weight" "n")}}{{template "th" (col "queues.cap" "n")}}{{template "th" (col "queues.jobs")}}</tr></thead>
     <tbody>
     {{range .Data.Queues}}
     <tr>
