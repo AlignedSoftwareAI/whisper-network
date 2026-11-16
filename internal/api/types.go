@@ -334,6 +334,16 @@ type Gauges struct {
 	StateFreeBytes *int64 `json:"state_free_bytes,omitempty"`
 	// CachedModels lists the complete model files in the cache.
 	CachedModels []CachedModel `json:"cached_models,omitempty"`
+
+	// HostLoad is the host's CPU utilisation in percent over the last
+	// minute, excluding the worker's own processes; nil if not measured.
+	HostLoad *float64 `json:"host_load,omitempty"`
+	// DeferredForLoad is true while a slot is not claiming because
+	// HostLoad is above the worker's --max-host-load.
+	DeferredForLoad bool `json:"deferred_for_load,omitempty"`
+	// ClaimsDeferred counts, since the worker started, the times a slot
+	// checked the host load and did not claim; nil when the check is off.
+	ClaimsDeferred *int64 `json:"claims_deferred,omitempty"`
 }
 
 // MaxCachedModels bounds Gauges.CachedModels; longer lists are dropped by

@@ -6,6 +6,7 @@
   <span class="badge state-{{$w.State}}">{{$w.State}}</span>
   {{if $w.PauseReason}}<span class="badge auto-paused">auto-paused</span>{{end}}
   {{if $w.Online}}<span class="badge online">online</span>{{end}}
+  {{if and $w.Online $w.Gauges}}{{if $w.Gauges.DeferredForLoad}}<span class="badge host-busy">busy host</span>{{end}}{{end}}
 </header>
 {{with $w.PauseReason}}<p class="notice auto-paused">Paused automatically by the circuit breaker: {{.}}. It finishes its current tasks but takes no new ones until resumed; resuming clears the failure streak.</p>{{end}}
 
@@ -25,6 +26,9 @@
     <dt>Kinds</dt><dd>{{range $i, $k := $w.Facts.Kinds}}{{if $i}}, {{end}}{{$k}}{{else}}<span class="muted">none</span>{{end}}</dd>
     <dt>Models</dt><dd>{{with $w.Facts.Models}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>
     <dt>Slots</dt><dd>{{$w.Facts.Slots}}{{with $w.Gauges}} · {{.SlotsBusy}} busy · load {{num .Load1}}{{if .ChildRSSBytes}} · children {{bytes .ChildRSSBytes}} RSS{{end}}{{end}}</dd>
+    {{with $w.Gauges}}{{if or .HostLoad .DeferredForLoad}}
+    <dt>Host CPU</dt><dd class="host-load">{{pctp .HostLoad}} used by other work{{if .DeferredForLoad}} · busy host, not taking work{{end}}</dd>
+    {{end}}{{end}}
     {{with $w.Gauges}}{{if or .ModelsBytes .WorkBytes .StateFreeBytes}}
     <dt>Disk</dt><dd class="disk">models {{bytesp .ModelsBytes}} · work {{bytesp .WorkBytes}} · {{bytesp .StateFreeBytes}} free</dd>
     {{with .CachedModels}}<dt>Cached models</dt><dd>{{range $i, $m := .}}{{if $i}}, {{end}}{{$m.Name}} ({{bytes $m.Bytes}}){{end}}</dd>{{end}}

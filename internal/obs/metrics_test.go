@@ -119,6 +119,7 @@ func fixtureSnapshot() Snapshot {
 			LastSeen: time.Unix(1700000000, 0), Slots: 4, SlotsBusy: 3, ChildRSSBytes: 1 << 30,
 			Load1: 1.5, CPUThrottled: 2 * time.Second,
 			ModelsBytes: ptr(int64(3 << 30)), WorkBytes: ptr(int64(0)), StateFreeBytes: ptr(int64(50 << 30)),
+			HostLoad: ptr(72.5), ClaimsDeferred: ptr(int64(12)),
 		}},
 		Storage:       StorageBytes{Original: 10, Canonical: 20, Transcript: 30},
 		DataFreeBytes: 999,
@@ -149,6 +150,8 @@ func TestSnapshotGauges(t *testing.T) {
 		`whisper_worker_models_bytes{worker="w1"} 3221225472`,
 		`whisper_worker_work_bytes{worker="w1"} 0`,
 		`whisper_worker_state_free_bytes{worker="w1"} 53687091200`,
+		`whisper_worker_host_load{worker="w1"} 72.5`,
+		`whisper_worker_claims_deferred_total{worker="w1"} 12`,
 		`whisper_storage_bytes{kind="original"} 10`,
 		`whisper_storage_bytes{kind="transcript"} 30`,
 		`whisper_data_free_bytes 999`,
@@ -168,6 +171,8 @@ func TestWorkerDiskSeriesOnlyWhenReported(t *testing.T) {
 	assert.NotContains(t, out, `whisper_worker_state_free_bytes{worker="old"}`)
 	assert.Contains(t, out, `whisper_worker_state_free_bytes{worker="full"} 0`)
 	assert.NotContains(t, out, `whisper_worker_work_bytes{worker="full"}`)
+	assert.NotContains(t, out, `whisper_worker_host_load{worker="old"}`)
+	assert.NotContains(t, out, `whisper_worker_claims_deferred_total{worker="old"}`)
 }
 
 func ptr[T any](v T) *T { return &v }

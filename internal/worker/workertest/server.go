@@ -34,14 +34,15 @@ type Server struct {
 	// MaxAttempts bounds a task's leases (default 2).
 	MaxAttempts int
 
-	mu      sync.Mutex
-	wake    chan struct{} // closed and replaced when a task becomes claimable
-	nextID  int
-	workers map[string]*Worker
-	tasks   []*Task
-	leases  map[string]*Lease
-	models  map[string][]byte
-	claims  []api.ClaimRequest
+	mu           sync.Mutex
+	wake         chan struct{} // closed and replaced when a task becomes claimable
+	nextID       int
+	workers      map[string]*Worker
+	tasks        []*Task
+	leases       map[string]*Lease
+	models       map[string][]byte
+	claims       []api.ClaimRequest
+	gaugeReports []api.Gauges
 
 	inputCuts      int // remaining input responses to cut
 	inputCutAt     int
@@ -119,6 +120,7 @@ func NewServer(t testing.TB) *Server {
 	mux.HandleFunc("GET /worker/{id}", s.auth(s.getWorker))
 	mux.HandleFunc("PATCH /worker/{id}", s.auth(s.patchWorker))
 	mux.HandleFunc("POST /worker/{id}/leases", s.auth(s.claim))
+	mux.HandleFunc("POST /worker/{id}/gauges", s.auth(s.reportGauges))
 	mux.HandleFunc("GET /lease/{id}/input", s.auth(s.leaseOp(s.input)))
 	mux.HandleFunc("POST /lease/{id}/heartbeat", s.auth(s.leaseOp(s.heartbeat)))
 	mux.HandleFunc("PUT /lease/{id}/result", s.auth(s.leaseOp(s.result)))
@@ -296,6 +298,25 @@ func (s *Server) Claims() []api.ClaimRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.claims)
+}
+
+// GaugeReports returns every POST /worker/{id}/gauges body received.
+func (s *Server) GaugeReports() []api.Gauges {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.gaugeReports)
+}
+
+func (s *Server) reportGauges(w http.ResponseWriter, r *http.Request, _ *Worker) {
+	var g api.Gauges
+	if err := json.NewDecoder(r.Body).Decode(&g); err != nil {
+		problem(w, http.StatusBadRequest, api.ProblemBadRequest, "")
+		return
+	}
+	s.mu.Lock()
+	s.gaugeReports = append(s.gaugeReports, g)
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ResultUploads returns how many result PUTs were received.

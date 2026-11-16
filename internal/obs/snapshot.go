@@ -85,6 +85,11 @@ type WorkerStat struct {
 	// Disk readings; nil when the worker did not report them (an older
 	// worker, or a failed probe), and then no series is written.
 	ModelsBytes, WorkBytes, StateFreeBytes *int64
+	// HostLoad is the host CPU utilisation in percent, excluding the
+	// worker's own processes, and ClaimsDeferred the worker's count of
+	// claims withheld for it; nil when not reported.
+	HostLoad       *float64
+	ClaimsDeferred *int64
 }
 
 // StorageBytes is the stored size per blob kind.
@@ -204,6 +209,16 @@ func (m *Metrics) writeWorkers(w io.Writer, in []WorkerStat) {
 			if v := c.val(x); v != nil {
 				fmt.Fprintf(w, "%s %d\n", series(c.name, "worker", x.ID), *v)
 			}
+		}
+	}
+	for _, x := range ws {
+		if x.HostLoad != nil {
+			fmt.Fprintf(w, "%s %g\n", series("whisper_worker_host_load", "worker", x.ID), *x.HostLoad)
+		}
+	}
+	for _, x := range ws {
+		if x.ClaimsDeferred != nil {
+			fmt.Fprintf(w, "%s %d\n", series("whisper_worker_claims_deferred_total", "worker", x.ID), *x.ClaimsDeferred)
 		}
 	}
 }

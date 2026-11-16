@@ -461,6 +461,7 @@ Model choice stays with the client. The rule "`en` → `small.en`, anything else
 |---|---|---|
 | `POST /worker` | Register. Body: facts (below). Returns `201` `{id, token, state:"pending"}`. Rate-limited per source IP; at most `--max-pending-per-source` workers from one address (IPv6: one /64) may await approval at once (`429`), and `--max-pending-workers` in total (`503`). | none |
 | `GET /worker/{id}` | Own state and grants; config hints (heartbeat interval, poll interval). | that worker, or an admin |
+| `POST /worker/{id}/gauges` | Report the gauges (§10.2) without claiming: sent by a worker whose host is too busy to take work (§7.3), so it stays seen and shows why it is idle. `204`. | active or paused worker |
 | `PATCH /worker/{id}` | Update facts (engine versions, models, slots, sandbox level) after restart or upgrade. | that worker |
 | `POST /worker/{id}/leases?wait=30s` | Claim one task. Body: `{"kinds":["prepare","transcribe"],"models":["small.en"],"gauges":{…}}`, describing what this slot can run **right now** given free memory and disk. The optional `gauges` are the same readings a heartbeat carries (§10.2): heartbeats only flow while a lease is held, so an idle worker reports through its claims. Returns `201` with the lease, or `204` on timeout. | active worker |
 | `GET /lease/{id}/input` | Prepare: the original bytes. Transcribe: a WAV stream (16 kHz mono s16) decoded from the canonical FLAC for this task's sample range. `Range` is supported for prepare; transcribe input is regenerated on retry. | lease holder, live lease |
@@ -531,6 +532,7 @@ The server validates the result: segment times must be monotonic, within the tas
 
 ```
 loop:
+  while hostBusy(): report gauges; sleep ~30s   (§7.3)
   kinds, models := whatFitsInFreeMemory()
   lease := POST /worker/{id}/leases?wait=30s {kinds, models}
   if 204: continue
@@ -574,6 +576,14 @@ slots            = min(slots_by_cpu, slots_by_mem)
 - Per-claim memory accounting means a slot only offers a model whose peak RSS fits in the memory not already reserved by other slots. A big-memory model never lands on a box that can't hold it.
 - Prepare tasks are ffmpeg-bound and short (minutes of CPU per hour of video, reasoned). They use a slot like any task, with a small fixed memory reservation.
 - `peak_rss` is a per-model table shipped with the binary and refined by `bench`.
+
+**Host load admission.** Slots are sized for the whole machine, but a worker often shares its host. Its children run at idle priority, so they yield to other work, but a starved task still holds a lease that an idle worker could finish sooner. So before each claim a slot checks the host's CPU utilisation **excluding the worker's own process tree**, and does not claim while it is above `--max-host-load` (default 70%).
+
+- **Measurement.** The busy share (everything but idle and iowait) of all CPU time in `/proc/stat`, minus the CPU time of the worker's own tree, averaged over the last minute from cumulative counters (samples taken when read, at most one a second). The tree's time is the sum over the worker and its live descendants (found through `/proc/<pid>/stat` parent links) of `utime + stime + cutime + cstime`: a reaped descendant's time moves into its parent's `cutime`, so each process is counted once. Subtracting the tree is the critical detail: without it, a worker running one 4-thread task on an 8-core box (50%) would refuse a second claim at 70%. The reading is host-wide, also in a container with a CPU quota: the question is whether the machine is busy, not whether the worker's own quota is used.
+- **Hysteresis.** A slot that stopped claiming resumes when the load falls below `--max-host-load-resume` (default 60%), so slots do not flap around the threshold. A deferred slot re-checks every 30 s ± 20% (jittered, so slots do not stampede), and sends its gauges with `POST /worker/{id}/gauges` each time, since it sends no claims: the server keeps seeing the worker and shows it as "busy host, not taking work". As other load rises fewer slots claim, and none above the threshold.
+- **Running tasks are not affected**: they keep going at idle priority. Only claiming is throttled.
+- `--max-host-load 0` disables the check. Before the first reading (just after start) a slot waits a second for one; an unknown reading admits. On platforms without `/proc/stat` (macOS, which is CI-only) the load is not measured, and an enabled check is ignored with a warning at startup.
+- The worker reports `host_load`, `deferred_for_load` and `claims_deferred` in its gauges (§10.2).
 
 **Measurement (v1):** `whisper-network bench --model small.en --threads 2,4,8` runs a bundled 60 s clip and reports realtime factor and peak RSS. Its output tunes the defaults. The numbers above are reasoned, not measured. Confidence: medium.
 
@@ -845,7 +855,7 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 
 **Workers: zero-config by default**
 - Fleet metrics are derived on the server from the protocol, so workers need no metrics config to be visible. The server already knows every lease, result, compute time and realtime factor.
-- Heartbeat bodies carry a few worker gauges, which the server re-exports with a `worker` label: slots busy, child RSS, load average, cgroup CPU throttling, and disk use under `--state` (model cache, work directories, free space; §7.2). Claims carry the same gauges, so idle workers, which send no heartbeats, stay current. Disk series are written only for workers that reported them.
+- Heartbeat bodies carry a few worker gauges, which the server re-exports with a `worker` label: slots busy, child RSS, load average, cgroup CPU throttling, disk use under `--state` (model cache, work directories, free space; §7.2), and the host CPU load excluding the worker's own processes with whether the worker is holding back claims for it (§7.3). Claims carry the same gauges, so idle workers, which send no heartbeats, stay current; a worker not claiming because its host is busy sends them on their own (`POST /worker/{id}/gauges`). Disk and host-load series are written only for workers that reported them.
 - **Optional, for host detail:** `--metrics-push-url` (same semantics as the server) or `--metrics-listen` for scraping.
 
 **Cardinality rules**
@@ -879,6 +889,8 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | `whisper_worker_child_rss_bytes` | gauge | `worker` | Memory sizing (§7.3) |
 | `whisper_worker_models_bytes` / `whisper_worker_work_bytes` | gauge | `worker` | Disk use under `--state`: model cache, lease work directories |
 | `whisper_worker_state_free_bytes` | gauge | `worker` | Worker disk alert |
+| `whisper_worker_host_load` | gauge | `worker` | Host CPU utilisation in percent over the last minute, excluding the worker's own processes (§7.3) |
+| `whisper_worker_claims_deferred_total` | counter | `worker` | Slot claim checks that held back because the host was busy (resets with the worker process) |
 | `whisper_worker_failure_streak` | gauge | `worker` | The circuit breaker's input: failed (retryable) and expired leases since the last completed task (§4.2) |
 | `whisper_worker_auto_paused` | gauge (0/1) | `worker` | 1 while the circuit breaker holds the worker paused; survives server restarts (from the database) |
 | `whisper_worker_auto_paused_total` | counter | `worker` | Circuit breaker trips since the server started |
@@ -969,6 +981,8 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--memory-reserve` | 1 GiB | |
 | `--disk-reserve` | 1 GiB | Kept free on the `--state` filesystem (disk admission, §7.2) |
 | `--model-cache-max` | 0 (unlimited) | LRU cap on the model cache (§7.2) |
+| `--max-host-load` | 70 | Percent. Slots stop claiming while the host's CPU use by other processes is above this; running tasks continue. `0` disables. Linux only (§7.3) |
+| `--max-host-load-resume` | 60 | Percent; a slot resumes claiming below this. At most `--max-host-load` |
 | `--kinds` | `prepare,transcribe` | e.g. `transcribe` only, to keep ffmpeg off a machine |
 | `--whisper-cli` / `--ffmpeg` | on `$PATH` | |
 | `--drain` | false | Graceful shutdown finishes running tasks first |

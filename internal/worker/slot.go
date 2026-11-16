@@ -15,13 +15,18 @@ import (
 // waits for the response.
 const claimSlack = 15 * time.Second
 
-// slot is one slot goroutine (DESIGN.md §7.2): reserve memory for what fits,
-// claim, run the lease, release the memory, repeat. It returns when runCtx is
+// slot is one slot goroutine (DESIGN.md §7.2): wait while the host is busy
+// with other work (§7.3), reserve memory for what fits, claim, run the lease, release the memory, repeat. It returns when runCtx is
 // cancelled, after its current lease has been finished or released.
 func (w *Worker) slot(runCtx, workCtx context.Context, n int) {
 	log := w.log.With().Int("slot", n).Logger()
 	failures := 0
+	var sl slotLoad
+	defer w.load.leave(&sl)
 	for runCtx.Err() == nil {
+		if w.load.enabled() && !w.waitForLoad(runCtx, &sl, log) {
+			return
+		}
 		off, res, err := w.mem.reserve(runCtx, w.facts.Kinds, w.offered, w.cfg.Limits.PrepareMemory)
 		if err != nil {
 			return

@@ -166,6 +166,29 @@ func (s *Server) leaseAPI(l *store.Lease) api.Lease {
 	return out
 }
 
+// handleGauges is POST /worker/{id}/gauges: record the worker's gauges
+// without claiming. A worker whose host is too busy to take work sends
+// these instead of claims (DESIGN.md §7.3). Active and paused workers only.
+func (s *Server) handleGauges(w http.ResponseWriter, r *http.Request, p *Principal) error {
+	if p.ID != r.PathValue("id") {
+		return s.hide(r, p, "another worker")
+	}
+	var g api.Gauges
+	if err := decodeWorkerJSON(w, r, &g, false, maxJSONBody); err != nil {
+		return err
+	}
+	if st := p.Worker.State; st != api.WorkerPaused {
+		if prob := claimState(st); prob != nil {
+			return prob
+		}
+	}
+	if err := s.st.TouchWorker(r.Context(), p.ID, sanitizeGauges(&g)); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
 // handleHeartbeat extends a live lease (and records worker gauges). 410
 // tells the worker to kill its child: the lease expired, was cancelled, or
 // its job was deleted; or it may not be extended any more, because the

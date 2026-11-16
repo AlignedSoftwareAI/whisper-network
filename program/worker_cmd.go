@@ -34,6 +34,8 @@ type WorkerCmd struct {
 	FFmpeg         string        `name:"ffmpeg" default:"ffmpeg" env:"WHISPER_FFMPEG" help:"ffmpeg binary"`
 	EngineVersion  string        `env:"WHISPER_ENGINE_VERSION" help:"Override the engine version reported by whisper-cli"`
 	Drain          bool          `env:"WHISPER_DRAIN" help:"On shutdown, finish running tasks instead of releasing them"`
+	MaxHostLoad    float64       `default:"70" env:"WHISPER_MAX_HOST_LOAD" help:"Stop claiming new tasks while the host's CPU use by other processes (percent, 1-minute average) is above this; running tasks continue (0: disabled; Linux only)"`
+	HostLoadResume float64       `name:"max-host-load-resume" default:"60" env:"WHISPER_MAX_HOST_LOAD_RESUME" help:"Resume claiming once the host's CPU use by other processes falls below this (percent)"`
 	ChildTimeout   float64       `default:"4" env:"WHISPER_CHILD_TIMEOUT_FACTOR" help:"whisper-cli time limit as a multiple of the audio duration (plus 10 min)"`
 	ChildUID       int           `name:"child-uid" env:"WHISPER_CHILD_UID" help:"Unprivileged uid, dedicated to whisper-network, to run ffmpeg and whisper-cli as. Required when the worker runs as root; nothing else may run as it."`
 	ChildGID       int           `name:"child-gid" env:"WHISPER_CHILD_GID" help:"Unprivileged gid to run ffmpeg and whisper-cli as. Required when the worker runs as root."`
@@ -41,6 +43,11 @@ type WorkerCmd struct {
 	MetricsPushURL string        `env:"WHISPER_METRICS_PUSH_URL" help:"Push metrics to this VictoriaMetrics import URL (optional)"`
 	MetricsPushInt time.Duration `name:"metrics-push-interval" default:"15s" env:"WHISPER_METRICS_PUSH_INTERVAL" help:"Metrics push interval"`
 	MetricsLabels  string        `env:"WHISPER_METRICS_LABELS" help:"Extra labels for pushed metrics, k=v,k=v"`
+}
+
+// Validate checks the flags that relate to each other.
+func (c *WorkerCmd) Validate() error {
+	return worker.CheckHostLoad(c.MaxHostLoad, c.HostLoadResume)
 }
 
 // Run runs the worker until the context is cancelled (SIGINT/SIGTERM).
@@ -69,6 +76,7 @@ func (c *WorkerCmd) Run(ctx context.Context, logger zerolog.Logger) error {
 		ThreadsPerSlot: c.ThreadsPerSlot, Slots: c.Slots,
 		MemoryReserve: int64(c.MemoryReserve), Memory: int64(c.Memory), Kinds: kinds,
 		DiskReserve: int64(c.DiskReserve), ModelCacheMax: int64(c.ModelCacheMax),
+		MaxHostLoad: c.MaxHostLoad, MaxHostLoadResume: c.HostLoadResume,
 		WhisperCLI: c.WhisperCLI, FFmpeg: c.FFmpeg, EngineVersion: c.EngineVersion, Drain: c.Drain,
 		ChildUID: c.ChildUID, ChildGID: c.ChildGID,
 		Version: Version, Logger: log, Metrics: m,

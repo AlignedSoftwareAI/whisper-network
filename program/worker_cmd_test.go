@@ -33,6 +33,35 @@ func TestWorkerCmdFlags(t *testing.T) {
 	assert.Equal(t, []string{"prepare", "transcribe"}, opts.Worker.Kinds)
 }
 
+func TestWorkerCmdHostLoadFlags(t *testing.T) {
+	skipOnWindows(t, "the worker is unsupported")
+	var opts Options
+	_, err := opts.Parse([]string{"worker", "--server", "https://wn.example"})
+	require.NoError(t, err)
+	assert.Equal(t, 70.0, opts.Worker.MaxHostLoad, "default")
+	assert.Equal(t, 60.0, opts.Worker.HostLoadResume, "default")
+
+	for _, args := range [][]string{
+		{"--max-host-load", "0"},
+		{"--max-host-load", "0", "--max-host-load-resume", "90"},
+		{"--max-host-load", "90", "--max-host-load-resume", "90"},
+	} {
+		opts = Options{}
+		_, err = opts.Parse(append([]string{"worker", "--server", "https://wn.example"}, args...))
+		assert.NoError(t, err, "%v", args)
+	}
+	for _, args := range [][]string{
+		{"--max-host-load", "50"}, // below the default resume
+		{"--max-host-load", "120"},
+		{"--max-host-load", "-1"},
+		{"--max-host-load-resume", "-1"},
+	} {
+		opts = Options{}
+		_, err = opts.Parse(append([]string{"worker", "--server", "https://wn.example"}, args...))
+		assert.Error(t, err, "%v", args)
+	}
+}
+
 func TestWorkerCmdRequiresServer(t *testing.T) {
 	var opts Options
 	_, err := opts.Parse([]string{"worker"})

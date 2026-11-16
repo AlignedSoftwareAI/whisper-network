@@ -54,6 +54,13 @@ func (c *Client) Claim(ctx context.Context, id string, req api.ClaimRequest, wai
 	return &out, nil
 }
 
+// ReportGauges sends worker id's gauges without claiming: an idle worker
+// that is not claiming (its host is busy) stays seen and current.
+func (c *Client) ReportGauges(ctx context.Context, id string, g *api.Gauges) error {
+	_, err := c.doJSON(ctx, http.MethodPost, c.endpoint("worker", id, "gauges"), g, nil, http.StatusNoContent)
+	return err
+}
+
 // Heartbeat extends a lease, reporting gauges if non-nil. A lease that is no
 // longer live yields an error for which IsLeaseGone is true.
 func (c *Client) Heartbeat(ctx context.Context, leaseID string, g *api.Gauges) (*api.HeartbeatResponse, error) {
