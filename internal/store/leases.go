@@ -26,11 +26,10 @@ type LeaseEnd struct {
 	Attempt int
 	// Requeued is true if the task went back to pending.
 	Requeued bool
-	// JobFailed is true if the task exhausted its attempts (or failed
-	// non-retryably) and took the job down with it.
+	// JobFailed is true if this lease end made its job failed: the job
+	// was failing (a task of it failed for good, possibly this one) and
+	// this was its last live lease.
 	JobFailed bool
-	// Cancelled lists sibling leases cancelled because the job failed.
-	Cancelled []string
 	// AutoPaused is set if this lease end tripped the worker circuit
 	// breaker and the worker was paused in the same transaction.
 	AutoPaused *AutoPause
@@ -121,29 +120,39 @@ func (s *Store) checkLive(l leaseRow, now time.Time) error {
 // counters (failed and expired only) and failure streak (which may pause
 // the worker, see trackFailureStreak), and disposes of its task:
 //   - the task's attempts become the number of distinct workers it has
-//     failed or expired on (DESIGN.md §4.2), so a release or cancellation
-//     refunds the attempt its lease was charged, and a second failed or
-//     expired lease on the same worker counts nothing;
+//     failed or expired on, not counting pre-work failures (DESIGN.md
+//     §4.2), so a release, cancellation or pre-work failure refunds the
+//     attempt its lease was charged, and a second failed or expired lease
+//     on the same worker counts nothing;
 //   - the task requeues if retryable and those attempts are below
-//     MaxAttempts, applying the scheduler's reactivation rule;
-//   - otherwise the task fails and fails its job.
+//     MaxAttempts, applying the scheduler's reactivation rule; a pre-work
+//     failure always requeues (see countsAsAttempt);
+//   - otherwise the task fails for good and its job becomes failing
+//     (doomJob);
+//   - in a failing job a task that would requeue is cancelled instead, and
+//     the job becomes failed once no live lease is left (settleJob).
 //
-// It returns nil if the lease had already ended (e.g. cancelled by a sibling
-// earlier in the same transaction).
+// stage is the stage a failing worker reported ("" if none). It returns nil
+// if the lease had already ended.
 func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome api.LeaseOutcome,
-	retryable bool, reason string, now time.Time) (*LeaseEnd, error) {
-	res, err := tx.ExecContext(ctx, `UPDATE leases SET ended_at = ?, outcome = ? WHERE id = ? AND ended_at IS NULL`,
-		toMS(now), string(outcome), l.ID)
+	retryable bool, reason string, stage api.FailureStage, now time.Time) (*LeaseEnd, error) {
+	if outcome != api.OutcomeFailed || !stage.Valid() || stage == api.StagePreWork && !s.preWorkRefund() {
+		stage = "" // a pre-work failure then counts as an ordinary one
+	}
+	stageCol := sql.NullString{String: string(stage), Valid: stage != ""}
+	res, err := tx.ExecContext(ctx, `UPDATE leases SET ended_at = ?, outcome = ?, stage = ?
+		WHERE id = ? AND ended_at IS NULL`, toMS(now), string(outcome), stageCol, l.ID)
 	if err != nil {
 		return nil, fmt.Errorf("end lease %s: %w", l.ID, err)
 	}
 	if n, err := res.RowsAffected(); err != nil || n == 0 {
 		return nil, err
 	}
+	preWork := stage == api.StagePreWork
 	if err := countLeaseEnd(ctx, tx, l.WorkerID, outcome); err != nil {
 		return nil, err
 	}
-	pause, err := s.trackFailureStreak(ctx, tx, l, outcome, retryable, now)
+	pause, err := s.trackFailureStreak(ctx, tx, l, outcome, retryable || preWork, preWork, now)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +163,13 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 	end := &LeaseEnd{LeaseID: l.ID, JobID: l.JobID, Seq: l.Seq, Kind: l.Kind, WorkerID: l.WorkerID,
 		Outcome: outcome, Attempt: len(workers), AutoPaused: pause}
 	errText := sql.NullString{String: reason, Valid: reason != ""}
+	failing, err := jobFailing(ctx, tx, l.JobID)
+	if err != nil {
+		return nil, err
+	}
 
-	if retryable && end.Attempt < s.cfg.MaxAttempts {
+	switch {
+	case (preWork || retryable && end.Attempt < s.cfg.MaxAttempts) && !failing:
 		if err := reactivate(ctx, tx, l.QueueID, l.Weight); err != nil {
 			return nil, err
 		}
@@ -166,20 +180,39 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 		}
 		end.Requeued = true
 		return end, nil
+	case preWork || retryable && end.Attempt < s.cfg.MaxAttempts:
+		// The task could run again, but its job is failing.
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, attempts = ?, error = COALESCE(?, error)
+			WHERE job_id = ? AND seq = ? AND state = 'leased'`,
+			taskCancelled, end.Attempt, errText, l.JobID, l.Seq); err != nil {
+			return nil, fmt.Errorf("cancel task: %w", err)
+		}
+	default:
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'failed', attempts = ?, error = COALESCE(?, error)
+			WHERE job_id = ? AND seq = ?`, end.Attempt, errText, l.JobID, l.Seq); err != nil {
+			return nil, fmt.Errorf("fail task: %w", err)
+		}
+		msg := failedAttempts(l.Kind, l.Seq, workers)
+		if reason != "" {
+			msg += ": " + reason
+		}
+		if err := doomJob(ctx, tx, l.JobID, msg, now); err != nil {
+			return nil, err
+		}
 	}
-
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'failed', attempts = ?, error = COALESCE(?, error)
-		WHERE job_id = ? AND seq = ?`, end.Attempt, errText, l.JobID, l.Seq); err != nil {
-		return nil, fmt.Errorf("fail task: %w", err)
-	}
-	msg := failedAttempts(l.Kind, l.Seq, workers) + ": " + reason
-	end.Cancelled, err = failJob(ctx, tx, l.JobID, msg, now)
+	end.JobFailed, err = settleJob(ctx, tx, l.JobID, now)
 	if err != nil {
 		return nil, err
 	}
-	end.JobFailed = true
 	return end, nil
 }
+
+// preWorkRefund reports whether a pre-work failure is refunded (DESIGN.md
+// §8.2). Only the circuit breaker stops a worker whose every lease fails
+// before work starts, so with the breaker off (WorkerFailureLimit 0) such a
+// failure counts as an ordinary one: the worker is then kept from the task
+// as before instead of taking it again and again.
+func (s *Store) preWorkRefund() bool { return s.cfg.WorkerFailureLimit > 0 }
 
 // failedAttempts begins a failed job's error: which task failed, after how
 // many counted attempts, and on which workers.
@@ -195,12 +228,17 @@ func failedAttempts(kind api.TaskKind, seq int, workers []string) string {
 	return msg
 }
 
-// failedOn returns the distinct workers that failed a task or let a lease
-// on it expire, in the order of their first such lease. Their number is the
+// countedFailureSQL is a condition (over leases, unqualified) that a lease
+// counts as a failed attempt: it failed, other than before work started, or
+// expired.
+const countedFailureSQL = `outcome IN ('failed','expired') AND stage IS NOT 'pre-work'`
+
+// failedOn returns the distinct workers that failed a task (not counting
+// pre-work failures) or let a lease on it expire, in the order of their first such lease. Their number is the
 // task's counted attempts, and a failed job's error names them.
 func failedOn(ctx context.Context, tx *sql.Tx, jobID string, seq int) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT worker_id FROM leases WHERE job_id = ? AND seq = ?
-		AND outcome IN ('failed','expired') GROUP BY worker_id ORDER BY MIN(created_at), MIN(rowid)`, jobID, seq)
+		AND `+countedFailureSQL+` GROUP BY worker_id ORDER BY MIN(created_at), MIN(rowid)`, jobID, seq)
 	if err != nil {
 		return nil, fmt.Errorf("failed attempts: %w", err)
 	}
@@ -287,19 +325,22 @@ type TranscribeCompletion struct {
 
 // CompleteTranscribe records a transcribe result and ends the lease as done.
 // It reports whether every transcribe task of the job is now done, so the
-// caller can assemble.
+// caller can assemble, or whether the job, failing because a sibling failed
+// for good, is now failed. A failing job's leased tasks still complete and
+// their results are kept.
 //
 // It is idempotent: repeating it for a lease that already completed with an
 // identical result succeeds again. A different result for a completed lease
 // is ErrConflict; any other non-live lease is ErrLeaseGone.
-func (s *Store) CompleteTranscribe(ctx context.Context, leaseID, workerID string, c TranscribeCompletion) (jobComplete bool, err error) {
+func (s *Store) CompleteTranscribe(ctx context.Context, leaseID, workerID string, c TranscribeCompletion) (TranscribeEnd, error) {
 	var buf bytes.Buffer
 	if err := json.Compact(&buf, c.Result); err != nil {
-		return false, fmt.Errorf("%w: result is not JSON: %w", ErrInvalid, err)
+		return TranscribeEnd{}, fmt.Errorf("%w: result is not JSON: %w", ErrInvalid, err)
 	}
 	result := buf.String()
 	now := s.now()
-	err = s.write(ctx, func(tx *sql.Tx) error {
+	var end TranscribeEnd
+	err := s.write(ctx, func(tx *sql.Tx) error {
 		l, err := heldLease(ctx, tx, leaseID, workerID)
 		if err != nil {
 			return err
@@ -316,7 +357,7 @@ func (s *Store) CompleteTranscribe(ctx context.Context, leaseID, workerID string
 			if stored.String != result {
 				return fmt.Errorf("lease %s already completed with a different result: %w", leaseID, ErrConflict)
 			}
-			jobComplete, err = transcriptionComplete(ctx, tx, l.JobID)
+			end.JobComplete, err = transcriptionComplete(ctx, tx, l.JobID)
 			return err
 		}
 		if err := s.checkLive(l, now); err != nil {
@@ -334,10 +375,24 @@ func (s *Store) CompleteTranscribe(ctx context.Context, leaseID, workerID string
 		if err := finishLease(ctx, tx, l, now); err != nil {
 			return err
 		}
-		jobComplete, err = transcriptionComplete(ctx, tx, l.JobID)
+		if end.JobComplete, err = transcriptionComplete(ctx, tx, l.JobID); err != nil || end.JobComplete {
+			return err
+		}
+		// A sibling may have failed for good while this task ran.
+		end.JobFailed, err = settleJob(ctx, tx, l.JobID, now)
 		return err
 	})
-	return jobComplete, err
+	return end, err
+}
+
+// TranscribeEnd says what a transcribe completion did to its job.
+type TranscribeEnd struct {
+	// JobComplete is true once every transcribe task of the job is done;
+	// the caller can assemble.
+	JobComplete bool
+	// JobFailed is true if the job was failing (a sibling failed for good)
+	// and this was its last live lease, so the job is now failed.
+	JobFailed bool
 }
 
 // finishLease ends a lease as done and bumps its job's updated_at.
@@ -432,9 +487,20 @@ func (s *Store) AcceptPrepare(ctx context.Context, leaseID, workerID string, p P
 
 // Fail ends a live lease as failed. The task requeues if retryable and it
 // has failed on fewer than MaxAttempts distinct workers; otherwise the task
-// and its job fail. The worker is never offered the task again.
+// fails for good and its job fails once no lease of it is live. The worker
+// is never offered the task again.
 func (s *Store) Fail(ctx context.Context, leaseID, workerID, reason string, retryable bool) (*LeaseEnd, error) {
-	return s.endHeld(ctx, leaseID, workerID, api.OutcomeFailed, retryable, reason)
+	return s.FailStage(ctx, leaseID, workerID, reason, retryable, "")
+}
+
+// FailStage is Fail with the stage the worker reported. A pre-work failure
+// requeues the task without counting an attempt and without keeping the
+// worker from it, but counts toward the worker's failure streak (unless the
+// breaker is off, see preWorkRefund). Any other stage is recorded and
+// behaves as Fail.
+func (s *Store) FailStage(ctx context.Context, leaseID, workerID, reason string, retryable bool,
+	stage api.FailureStage) (*LeaseEnd, error) {
+	return s.endHeld(ctx, leaseID, workerID, api.OutcomeFailed, retryable, reason, stage)
 }
 
 // Release ends a live lease voluntarily (graceful worker shutdown). The task
@@ -442,11 +508,11 @@ func (s *Store) Fail(ctx context.Context, leaseID, workerID, reason string, retr
 // a release never counts toward MaxAttempts and does not keep the worker
 // from taking the task again. Scheduler cost is not refunded.
 func (s *Store) Release(ctx context.Context, leaseID, workerID string) (*LeaseEnd, error) {
-	return s.endHeld(ctx, leaseID, workerID, api.OutcomeReleased, true, "")
+	return s.endHeld(ctx, leaseID, workerID, api.OutcomeReleased, true, "", "")
 }
 
 func (s *Store) endHeld(ctx context.Context, leaseID, workerID string, outcome api.LeaseOutcome,
-	retryable bool, reason string) (*LeaseEnd, error) {
+	retryable bool, reason string, stage api.FailureStage) (*LeaseEnd, error) {
 	now := s.now()
 	var end *LeaseEnd
 	err := s.write(ctx, func(tx *sql.Tx) error {
@@ -454,7 +520,7 @@ func (s *Store) endHeld(ctx context.Context, leaseID, workerID string, outcome a
 		if err != nil {
 			return err
 		}
-		end, err = s.endLease(ctx, tx, l, outcome, retryable, reason, now)
+		end, err = s.endLease(ctx, tx, l, outcome, retryable, reason, stage, now)
 		return err
 	})
 	return end, err
@@ -462,7 +528,7 @@ func (s *Store) endHeld(ctx context.Context, leaseID, workerID string, outcome a
 
 // ExpireLeases ends every live lease whose expiry has passed. Each task
 // requeues (with reactivation) or, once it has failed or expired on
-// MaxAttempts distinct workers, fails its job. The lease's worker is never
+// MaxAttempts distinct workers, fails for good (see endLease). The lease's worker is never
 // offered the task again.
 func (s *Store) ExpireLeases(ctx context.Context) ([]LeaseEnd, error) {
 	now := s.now()
@@ -477,7 +543,7 @@ func (s *Store) ExpireLeases(ctx context.Context) ([]LeaseEnd, error) {
 			if !l.TaskExists {
 				continue // unreachable: deleting a job ends its leases
 			}
-			end, err := s.endLease(ctx, tx, l, api.OutcomeExpired, true, "lease expired", now)
+			end, err := s.endLease(ctx, tx, l, api.OutcomeExpired, true, "lease expired", "", now)
 			if err != nil {
 				return err
 			}

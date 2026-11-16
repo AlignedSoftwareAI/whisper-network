@@ -155,6 +155,8 @@ type TaskCounts struct {
 	Leased  int `json:"leased"`
 	Done    int `json:"done"`
 	Failed  int `json:"failed"`
+	// Cancelled counts tasks that will not run because the job failed.
+	Cancelled int `json:"cancelled"`
 }
 
 // Downloads records transcript retrieval.
@@ -377,6 +379,31 @@ type FailureReport struct {
 	Reason     string `json:"reason"`
 	StderrTail string `json:"stderr_tail,omitempty"` // <= MaxStderrTail bytes
 	Retryable  bool   `json:"retryable"`
+	// Stage says how far the worker got before failing. Empty (older
+	// workers) is treated like StageInput and StageChild.
+	Stage FailureStage `json:"stage,omitempty"`
+}
+
+// FailureStage is where in a task a worker failed (DESIGN.md §8.2).
+type FailureStage string
+
+const (
+	// StagePreWork is before the worker fetched the input or started a
+	// child: its own configuration (tools, models, the input URL's origin)
+	// failed. It says nothing about the task, so the server requeues the
+	// task without counting an attempt or excluding the worker, and counts
+	// the failure only toward the worker's failure streak.
+	StagePreWork FailureStage = "pre-work"
+	// StageInput is while downloading or checking the input.
+	StageInput FailureStage = "input"
+	// StageChild is while running ffmpeg or whisper-cli, or handling
+	// their output.
+	StageChild FailureStage = "child"
+)
+
+// Valid reports whether s is a known stage.
+func (s FailureStage) Valid() bool {
+	return s == StagePreWork || s == StageInput || s == StageChild
 }
 
 const MaxStderrTail = 4 << 10

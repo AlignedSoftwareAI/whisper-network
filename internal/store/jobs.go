@@ -14,9 +14,10 @@ import (
 	"github.com/deweysasser/whisper-network/internal/api"
 )
 
-// taskCancelled is the internal state of a task whose job failed while it was
-// pending or leased. It is not part of the wire contract; TaskCounts counts
-// such tasks only in Total.
+// taskCancelled is the internal state of a task that will not run because
+// its job failed: it was pending (or its lease ended without a result) after
+// a sibling task failed for good, or the job was failed outright. TaskCounts
+// reports such tasks as Cancelled.
 const taskCancelled = "cancelled"
 
 // Media describes an uploaded original.
@@ -268,7 +269,8 @@ const jobSelect = `SELECT j.id, j.queue_id, q.name, j.client_id, COALESCE(j.idem
 	j.canonical_purged_at, j.created_at, j.updated_at, j.started_at, j.completed_at, j.compute_ms,
 	COALESCE(j.error, ''), j.download_count, j.first_downloaded_at, j.last_downloaded_at,
 	COUNT(t.seq), COALESCE(SUM(t.state = 'pending'), 0), COALESCE(SUM(t.state = 'leased'), 0),
-	COALESCE(SUM(t.state = 'done'), 0), COALESCE(SUM(t.state = 'failed'), 0), COALESCE(SUM(t.compute_ms), 0)
+	COALESCE(SUM(t.state = 'done'), 0), COALESCE(SUM(t.state = 'failed'), 0),
+	COALESCE(SUM(t.state = 'cancelled'), 0), COALESCE(SUM(t.compute_ms), 0)
 	FROM jobs j JOIN queues q ON q.id = j.queue_id LEFT JOIN tasks t ON t.job_id = j.id`
 
 func scanJob(row interface{ Scan(...any) error }) (*Job, error) {
@@ -280,7 +282,7 @@ func scanJob(row interface{ Scan(...any) error }) (*Job, error) {
 		&j.Model, &j.Language, &j.Prompt, &j.Label, &j.Source, &meta, &j.Original.Bytes, &j.Original.SHA256,
 		&j.Original.Type, &origPurged, &canonBytes, &canonSHA, &samples, &canonPurged, &created, &updated,
 		&started, &completed, &computeMS, &j.Error, &j.DownloadCount, &firstDL, &lastDL,
-		&j.Tasks.Total, &j.Tasks.Pending, &j.Tasks.Leased, &j.Tasks.Done, &j.Tasks.Failed, &taskCompute)
+		&j.Tasks.Total, &j.Tasks.Pending, &j.Tasks.Leased, &j.Tasks.Done, &j.Tasks.Failed, &j.Tasks.Cancelled, &taskCompute)
 	if err != nil {
 		return nil, err
 	}
@@ -518,8 +520,9 @@ func (s *Store) FailJob(ctx context.Context, id, reason string) (cancelled []str
 	return cancelled, err
 }
 
-// failJob marks a job failed, cancels its unfinished tasks and their live
-// leases, and returns the cancelled lease ids.
+// failJob marks a job failed at once: it cancels the job's unfinished tasks
+// and their live leases, and returns the cancelled lease ids. A task that
+// fails for good does not use it (see doomJob).
 func failJob(ctx context.Context, tx *sql.Tx, jobID, reason string, now time.Time) ([]string, error) {
 	ids, err := cancelJobLeases(ctx, tx, jobID, now)
 	if err != nil {
@@ -536,4 +539,112 @@ func failJob(ctx context.Context, tx *sql.Tx, jobID, reason string, now time.Tim
 		return nil, fmt.Errorf("fail job %s: %w", jobID, err)
 	}
 	return ids, nil
+}
+
+// A job whose task failed for good (exhausted its attempts, or no other
+// worker took it within the retry wait limit) is failing (DESIGN.md §4.2):
+// it can no longer be done, but its tasks that are already leased run to
+// completion so their results are kept. doomJob makes a job failing; the
+// job becomes failed when settleJob finds no live lease left.
+
+// doomJob records reason as a failing job's error (the first task to fail
+// names it) and cancels the job's pending tasks, so no new lease is issued
+// for it. Live leases are left alone.
+func doomJob(ctx context.Context, tx *sql.Tx, jobID, reason string, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ? WHERE job_id = ? AND state = 'pending'`,
+		taskCancelled, jobID); err != nil {
+		return fmt.Errorf("fail job %s: %w", jobID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET error = COALESCE(error, ?), updated_at = ?
+		WHERE id = ? AND state NOT IN ('done','failed')`, reason, toMS(now), jobID); err != nil {
+		return fmt.Errorf("fail job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// jobFailing reports whether a job has a task that failed for good.
+func jobFailing(ctx context.Context, q querier, jobID string) (bool, error) {
+	var failing bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE job_id = ? AND state = 'failed')`,
+		jobID).Scan(&failing)
+	if err != nil {
+		return false, fmt.Errorf("job %s failing: %w", jobID, err)
+	}
+	return failing, nil
+}
+
+// settleJob marks a failing job failed once it has no live lease, adding
+// the job's progress to its error: "...; 2 of 12 tasks done, 4 cancelled"
+// (transcribe tasks; a job that failed preparing has none). It reports
+// whether the job became failed.
+func settleJob(ctx context.Context, tx *sql.Tx, jobID string, now time.Time) (bool, error) {
+	var live bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM leases WHERE job_id = ? AND ended_at IS NULL)`,
+		jobID).Scan(&live); err != nil {
+		return false, fmt.Errorf("settle job %s: %w", jobID, err)
+	}
+	if live {
+		return false, nil
+	}
+	var total, done, cancelled int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(state = 'done'), 0),
+		COALESCE(SUM(state = 'cancelled'), 0) FROM tasks WHERE job_id = ? AND kind = 'transcribe'`,
+		jobID).Scan(&total, &done, &cancelled); err != nil {
+		return false, fmt.Errorf("settle job %s: %w", jobID, err)
+	}
+	var progress string
+	if total > 0 {
+		progress = fmt.Sprintf("; %d of %d tasks done, %d cancelled", done, total, cancelled)
+	}
+	ms := toMS(now)
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'failed', error = COALESCE(error, 'a task failed') || ?,
+		completed_at = ?, updated_at = ?,
+		compute_ms = (SELECT COALESCE(SUM(compute_ms), 0) FROM tasks WHERE job_id = jobs.id)
+		WHERE id = ? AND state NOT IN ('done','failed')
+		AND EXISTS (SELECT 1 FROM tasks WHERE job_id = jobs.id AND state = 'failed')`, progress, ms, ms, jobID)
+	if err != nil {
+		return false, fmt.Errorf("settle job %s: %w", jobID, err)
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// SettleFailingJobs marks failed every failing job with no live lease left
+// and returns their ids. Lease ends and completions settle their job in the
+// same transaction, so this is the reaper's backstop.
+func (s *Store) SettleFailingJobs(ctx context.Context) ([]string, error) {
+	var out []string
+	err := s.write(ctx, func(tx *sql.Tx) error {
+		out = nil
+		rows, err := tx.QueryContext(ctx, `SELECT j.id FROM jobs j WHERE j.state IN ('preparing','queued','running')
+			AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'failed')
+			AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.job_id = j.id AND l.ended_at IS NULL)`)
+		if err != nil {
+			return fmt.Errorf("failing jobs: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("failing jobs: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("failing jobs: %w", err)
+		}
+		for _, id := range ids {
+			ok, err := settleJob(ctx, tx, id, s.now())
+			if err != nil {
+				return err
+			}
+			if ok {
+				out = append(out, id)
+			}
+		}
+		return nil
+	})
+	return out, err
 }

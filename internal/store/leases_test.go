@@ -61,8 +61,8 @@ func TestExpiryRequeueAndMaxAttempts(t *testing.T) {
 	assert.Equal(t, 1, attempts)
 
 	// Second attempt, on another worker (w never gets the task back), also
-	// expires: max_attempts (2) reached, job fails and the sibling's lease
-	// is cancelled.
+	// expires: max_attempts (2) reached. The job is failing, but the
+	// sibling's lease stays live (#63).
 	assert.Nil(t, f.claim(w))
 	l3 := f.claim(w2)
 	require.Equal(t, 1, l3.Seq)
@@ -74,17 +74,25 @@ func TestExpiryRequeueAndMaxAttempts(t *testing.T) {
 	ends, err = f.s.ExpireLeases(f.ctx)
 	require.NoError(t, err)
 	require.Len(t, ends, 1)
-	assert.True(t, ends[0].JobFailed)
+	assert.False(t, ends[0].JobFailed, "the sibling's lease is still live")
 	assert.False(t, ends[0].Requeued)
-	assert.Equal(t, []string{l2.ID}, ends[0].Cancelled)
 
 	got, err := f.s.Job(f.ctx, j.ID)
 	require.NoError(t, err)
-	assert.Equal(t, api.JobFailed, got.State)
+	assert.Equal(t, api.JobRunning, got.State)
 	assert.Contains(t, got.Error, "2 attempt(s)")
 	assert.Equal(t, 1, got.Tasks.Failed)
 	_, err = f.s.Heartbeat(f.ctx, l2.ID, w, ttl, LeaseAgeLimit{})
-	assert.ErrorIs(t, err, ErrLeaseGone)
+	require.NoError(t, err)
+
+	// The sibling completes; that was the last live lease.
+	end, err := f.s.CompleteTranscribe(f.ctx, l2.ID, w, TranscribeCompletion{Result: []byte(`{}`)})
+	require.NoError(t, err)
+	assert.Equal(t, TranscribeEnd{JobFailed: true}, end)
+	got, err = f.s.Job(f.ctx, j.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.JobFailed, got.State)
+	assert.Equal(t, 1, got.Tasks.Done)
 	assert.Nil(t, f.claim(w))
 }
 
@@ -124,13 +132,13 @@ func TestCompleteIsIdempotent(t *testing.T) {
 	res := TranscribeCompletion{Result: []byte(`{"segments": [ ]}`), ComputeMS: 5}
 	done, err := f.s.CompleteTranscribe(f.ctx, l.ID, w, res)
 	require.NoError(t, err)
-	assert.True(t, done)
+	assert.True(t, done.JobComplete)
 
 	f.clk.Advance(time.Hour) // long past expiry; the retry still succeeds
 	res.Result = []byte(`{"segments":[]}`)
 	done, err = f.s.CompleteTranscribe(f.ctx, l.ID, w, res)
 	require.NoError(t, err, "same result (modulo whitespace) again")
-	assert.True(t, done)
+	assert.True(t, done.JobComplete)
 
 	res.Result = []byte(`{"segments":[{"text":"x"}]}`)
 	_, err = f.s.CompleteTranscribe(f.ctx, l.ID, w, res)

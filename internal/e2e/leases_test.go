@@ -73,7 +73,7 @@ func TestMaxAttemptsFailsJob(t *testing.T) {
 	doomed.Kill()
 	failed := e.WaitJob(job.ID, api.JobFailed)
 	require.NotNil(t, failed.Error)
-	assert.Equal(t, "transcribe task 1 failed after 1 attempt(s) (on worker "+doomed.ID()+"): lease expired", *failed.Error)
+	assert.Equal(t, "transcribe task 1 failed after 1 attempt(s) (on worker "+doomed.ID()+"): lease expired; 0 of 1 tasks done, 0 cancelled", *failed.Error)
 	assert.Equal(t, 1, failed.Tasks.Failed)
 	assert.NotNil(t, failed.CompletedAt)
 	e.WaitEvent(obs.EventJobFailed, func(m map[string]any) bool { return m[obs.FieldJobID] == job.ID })

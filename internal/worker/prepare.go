@@ -32,19 +32,29 @@ func PrepareArgs(ffmpeg, in, out string) []string {
 // prepare converts the original media to canonical FLAC and uploads it.
 func (w *Worker) prepare(ctx context.Context, l *api.Lease, dir string, run *leaseRun, log zerolog.Logger) (taskStats, error) {
 	if w.tools.ffmpeg == "" {
-		return taskStats{}, &taskError{reason: "ffmpeg is not installed on this worker", retryable: true}
+		return taskStats{}, preWork("ffmpeg is not installed on this worker", nil)
+	}
+	if err := w.checkInputURL(l); err != nil {
+		return taskStats{}, err
 	}
 	if l.InputBytes <= 0 {
-		return taskStats{}, &taskError{reason: "lease carries no input_bytes; refusing an unbounded input"}
+		return taskStats{}, &taskError{reason: "lease carries no input_bytes; refusing an unbounded input",
+			stage: api.StageInput}
 	}
 	in := filepath.Join(dir, "input")
 	n, err := w.download(ctx, l, in, l.InputBytes, log)
 	if err != nil {
-		return taskStats{}, transferError("downloading input", err)
+		return taskStats{}, staged(api.StageInput, transferError("downloading input", err))
 	}
 	if err := checkInput(in, n, l); err != nil {
-		return taskStats{}, err
+		return taskStats{}, staged(api.StageInput, err)
 	}
+	stats, err := w.prepareChild(ctx, l, dir, in, run, log)
+	return stats, staged(api.StageChild, err)
+}
+
+// prepareChild runs ffmpeg on the downloaded input and uploads its output.
+func (w *Worker) prepareChild(ctx context.Context, l *api.Lease, dir, in string, run *leaseRun, log zerolog.Logger) (taskStats, error) {
 
 	out := filepath.Join(dir, "out.flac")
 	lim := w.cfg.Limits

@@ -58,7 +58,7 @@ Example:
 - `queued`: waiting for a worker
 - `running`: being transcribed (`tasks.done` / `tasks.total` shows progress for long recordings)
 - `done`: transcript ready
-- `failed`: see `error`; retrying the same media is usually pointless
+- `failed`: see `error`, which ends with how many tasks were done and cancelled (also in `tasks`); retrying the same media is usually pointless. When one task fails for good, tasks already running finish first, so `error` can appear while the job is still `running`; treat that as failing.
 
 Poll no more than once a minute; transcription runs at roughly real time or faster, so a one-hour recording typically takes tens of minutes once a worker picks it up. Never busy-loop. Do not block a conversation turn waiting: submit, record the job ID, and check back later.
 

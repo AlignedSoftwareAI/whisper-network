@@ -119,7 +119,7 @@ func TestAttemptsCountDistinctWorkers(t *testing.T) {
 	got, err := f.s.Job(f.ctx, j.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "transcribe task 1 failed after 3 attempt(s) (on workers "+strings.Join(ws, ", ")+
-		"): out of memory", got.Error)
+		"): out of memory; 0 of 1 tasks done, 0 cancelled", got.Error)
 }
 
 // TestExpiryAndFailureOnOneWorkerCountOnce: a worker that both let a lease
@@ -154,7 +154,7 @@ func TestExpiryAndFailureOnOneWorkerCountOnce(t *testing.T) {
 	require.True(t, end.JobFailed)
 	got, err := f.s.Job(f.ctx, j.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+a+", "+b+"): broken", got.Error)
+	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+a+", "+b+"): broken; 0 of 1 tasks done, 0 cancelled", got.Error)
 }
 
 // TestNonRetryableFailsAtOnce: a failure the worker attributes to the input
@@ -191,7 +191,8 @@ func TestFailStranded(t *testing.T) {
 	require.NotNil(t, l)
 	_, err := f.s.Fail(f.ctx, l.ID, a, "model file corrupt", true)
 	require.NoError(t, err)
-	require.NotNil(t, f.claim(a), "a gets the job's other task")
+	sibling := f.claim(a)
+	require.NotNil(t, sibling, "a gets the job's other task")
 
 	f.clk.Advance(limit - time.Millisecond)
 	st, err := f.s.FailStranded(f.ctx, limit)
@@ -207,10 +208,25 @@ func TestFailStranded(t *testing.T) {
 	want := "transcribe task 1 failed after 1 attempt(s) (on worker " + a +
 		"); no other eligible worker took it within 24h: model file corrupt"
 	assert.Equal(t, want, st[0].Reason)
+	assert.False(t, st[0].JobFailed, "the sibling's lease is live")
 	got, err := f.s.Job(f.ctx, j.ID)
 	require.NoError(t, err)
-	assert.Equal(t, api.JobFailed, got.State)
+	assert.Equal(t, api.JobRunning, got.State, "failing: the leased sibling runs to completion")
 	assert.Equal(t, want, got.Error)
+
+	// The sibling's lease (long past its expiry here) is reaped: its task
+	// is cancelled rather than requeued, and the job is failed.
+	ends, err := f.s.ExpireLeases(f.ctx)
+	require.NoError(t, err)
+	require.Len(t, ends, 1)
+	assert.Equal(t, sibling.ID, ends[0].LeaseID)
+	assert.True(t, ends[0].JobFailed)
+	assert.False(t, ends[0].Requeued)
+	got, err = f.s.Job(f.ctx, j.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.JobFailed, got.State)
+	assert.Equal(t, want+"; 0 of 2 tasks done, 1 cancelled", got.Error)
+	assert.Equal(t, api.TaskCounts{Total: 2, Failed: 1, Cancelled: 1}, got.Tasks)
 
 	got, err = f.s.Job(f.ctx, other.ID)
 	require.NoError(t, err)
@@ -331,5 +347,5 @@ func TestFailedJobNamesWorkers(t *testing.T) {
 	require.NoError(t, err)
 	got, err := f.s.Job(f.ctx, j.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+a+", "+b+"): out of memory", got.Error)
+	assert.Equal(t, "transcribe task 1 failed after 2 attempt(s) (on workers "+a+", "+b+"): out of memory; 0 of 1 tasks done, 0 cancelled", got.Error)
 }

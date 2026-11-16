@@ -70,12 +70,16 @@ func oneLine(s string) string {
 // transcribe runs whisper-cli on the lease's WAV and uploads the segments.
 func (w *Worker) transcribe(ctx context.Context, l *api.Lease, dir string, run *leaseRun, log zerolog.Logger) (taskStats, error) {
 	if w.tools.whisper == "" {
-		return taskStats{}, &taskError{reason: "whisper-cli is not installed on this worker", retryable: true}
+		return taskStats{}, preWork("whisper-cli is not installed on this worker", nil)
 	}
 	if l.AudioSamples <= 0 {
 		// The size bounds the download, the timeout and RLIMIT_AS; without
 		// it the input would be unbounded.
-		return taskStats{}, &taskError{reason: "lease carries no audio_samples; refusing an unbounded input"}
+		return taskStats{}, &taskError{reason: "lease carries no audio_samples; refusing an unbounded input",
+			stage: api.StageInput}
+	}
+	if err := w.checkInputURL(l); err != nil {
+		return taskStats{}, err
 	}
 	m, err := w.leaseModel(l.Model, l.ModelSHA256, models.KindWhisper)
 	if err != nil {
@@ -83,7 +87,7 @@ func (w *Worker) transcribe(ctx context.Context, l *api.Lease, dir string, run *
 	}
 	modelPath, releaseModel, err := w.cache.Acquire(ctx, m)
 	if err != nil {
-		return taskStats{}, transferError("fetching model "+m.Name, err)
+		return taskStats{}, staged(api.StagePreWork, transferError("fetching model "+m.Name, err))
 	}
 	defer releaseModel() // held against cache eviction while whisper-cli runs
 	w.disk.invalidate()
@@ -95,7 +99,7 @@ func (w *Worker) transcribe(ctx context.Context, l *api.Lease, dir string, run *
 		}
 		var releaseVAD func()
 		if vadPath, releaseVAD, err = w.cache.Acquire(ctx, vm); err != nil {
-			return taskStats{}, transferError("fetching VAD model "+vm.Name, err)
+			return taskStats{}, staged(api.StagePreWork, transferError("fetching VAD model "+vm.Name, err))
 		}
 		defer releaseVAD()
 	}
@@ -103,8 +107,16 @@ func (w *Worker) transcribe(ctx context.Context, l *api.Lease, dir string, run *
 	in := filepath.Join(dir, "input.wav")
 	maxIn := int64(len(media.WAVHeader(0))) + l.AudioSamples*media.BytesPerSample
 	if _, err := w.download(ctx, l, in, maxIn, log); err != nil {
-		return taskStats{}, transferError("downloading input", err)
+		return taskStats{}, staged(api.StageInput, transferError("downloading input", err))
 	}
+	stats, err := w.transcribeChild(ctx, l, dir, in, m, modelPath, vadPath, run, log)
+	return stats, staged(api.StageChild, err)
+}
+
+// transcribeChild runs whisper-cli on the downloaded input and uploads the
+// result.
+func (w *Worker) transcribeChild(ctx context.Context, l *api.Lease, dir, in string, m models.Model,
+	modelPath, vadPath string, run *leaseRun, log zerolog.Logger) (taskStats, error) {
 	audio := time.Duration(l.AudioSamples) * time.Second / media.SampleRate
 
 	lang := l.Language
@@ -172,10 +184,10 @@ func (w *Worker) transcribe(ctx context.Context, l *api.Lease, dir string, run *
 func (w *Worker) leaseModel(name, sha string, kind models.Kind) (models.Model, error) {
 	m, ok := w.cfg.Catalog.Lookup(name)
 	if !ok || m.Kind != kind {
-		return m, &taskError{reason: fmt.Sprintf("model %q is not in this worker's %s table", name, kind), retryable: true}
+		return m, preWork(fmt.Sprintf("model %q is not in this worker's %s table", name, kind), nil)
 	}
 	if sha != "" && sha != m.SHA256 {
-		return m, &taskError{reason: fmt.Sprintf("model %s: server pins sha256 %s, worker pins %s", name, sha, m.SHA256), retryable: true}
+		return m, preWork(fmt.Sprintf("model %s: server pins sha256 %s, worker pins %s", name, sha, m.SHA256), nil)
 	}
 	return m, nil
 }
