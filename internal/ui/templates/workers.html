@@ -14,6 +14,7 @@
   <table class="data workers">
     <thead><tr>
       <th scope="col">Worker</th><th scope="col">State</th><th scope="col">Queues</th><th scope="col">Sandbox</th>
+      <th scope="col" title="whisper-network version, compared with this server's ({{.Data.ServerVersion}}): outdated is older, a note marks newer, differs when the two cannot be ordered. Hover a version for the engine and ffmpeg versions.">Version</th>
       <th scope="col" class="n">Slots</th><th scope="col">Last seen</th>
       <th scope="col" class="n">Tasks done</th><th scope="col" class="n">Audio hours</th>
       <th scope="col" class="n" title="Average realtime factor: audio seconds transcribed per compute second">Avg RTF</th>
@@ -24,7 +25,7 @@
     <tbody>
     {{range .Data.Rows}}{{template "worker-row" .}}
     {{else}}
-    <tr><td colspan="11" class="muted">{{if .Data.State}}No workers in state {{.Data.State}}.{{else}}No workers are registered, or none you may manage.{{end}}</td></tr>
+    <tr><td colspan="12" class="muted">{{if .Data.State}}No workers in state {{.Data.State}}.{{else}}No workers are registered, or none you may manage.{{end}}</td></tr>
     {{end}}
     </tbody>
   </table>
@@ -43,6 +44,12 @@
   <td><span class="badge state-{{.State}}">{{.State}}</span>{{with .PauseReason}} <span class="badge auto-paused" title="Paused by the circuit breaker: {{.}}">auto</span>{{end}}</td>
   <td>{{range .Queues}}<span class="chip">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</td>
   <td><span class="badge sandbox-{{.Sandbox}}">{{.Sandbox}}</span></td>
+  <td class="version" title="engine {{or .EngineVersion "unknown"}} · ffmpeg {{or .FFmpegVersion "unknown"}}">
+    {{- with .Version}}<code>{{.}}</code>{{else}}<span class="muted">—</span>{{end}}
+    {{- if eq (print .Skew) "older"}} <span class="badge outdated" title="Older than the server ({{.ServerVersion}})">outdated</span>
+    {{- else if eq (print .Skew) "newer"}} <span class="muted small skew-newer" title="The server runs {{.ServerVersion}}">newer than server</span>
+    {{- else if eq (print .Skew) "differs"}} <span class="badge differs" title="Cannot be ordered against the server's {{.ServerVersion}}">differs</span>{{end -}}
+  </td>
   <td class="n" title="busy / total, from the last heartbeat">{{with .SlotsBusy}}{{.}}{{else}}–{{end}}/{{.Slots}}</td>
   <td title="{{whenp .LastSeenAt}}">{{ago .LastSeenAt}}{{if .Online}} <span class="badge online">online</span>{{end}}</td>
   {{- with .Stats}}

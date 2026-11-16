@@ -138,6 +138,9 @@ button.small, .button.small { padding: 0.1rem 0.55rem; font-size: 0.85em; }
 header.row.title h1 { margin: 0; }
 /* Paused by the circuit breaker (DESIGN.md §4.2): needs an administrator. */
 .badge.auto-paused, .badge.host-busy, .streak { color: var(--warn); }
+/* Version skew against the server (DESIGN.md §6.3). */
+.badge.outdated, .badge.differs, .version-mix { color: var(--warn); }
+td.version { white-space: nowrap; }
 table.workers tr.worker-paused:has(.auto-paused) td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
 
 /* Messages */

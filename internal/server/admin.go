@@ -7,6 +7,7 @@ package server
 // "queue:<name>" or "worker:<id>".
 //
 //	GET    /admin/workers                  list workers (pending first)          admin, worker_admin, queue_admin
+//	GET    /admin/version                  api.ServerVersion (server's own)      admin, worker_admin, queue_admin
 //	POST   /admin/workers/{id}/approve     {"queues":[...]} → 204                worker_admin + queue_admin on each queue
 //	POST   /admin/workers/{id}/pause       → 204                                 worker_admin
 //	POST   /admin/workers/{id}/resume      → 204                                 worker_admin
@@ -50,6 +51,17 @@ func holdsRole(p *Principal, role api.Role) bool {
 		}
 	}
 	return false
+}
+
+// handleAdminVersion reports the server's own version, for comparing with
+// the versions in GET /admin/workers. It is open to whoever may list
+// workers.
+func (s *Server) handleAdminVersion(w http.ResponseWriter, r *http.Request, p *Principal) error {
+	if !holdsRole(p, api.RoleQueueAdmin) && !holdsRole(p, api.RoleWorkerAdmin) && !holdsRole(p, api.RoleAdmin) {
+		return s.deny(r, p, "worker_admin or queue_admin required")
+	}
+	writeJSON(w, http.StatusOK, api.ServerVersion{Version: s.cfg.Version})
+	return nil
 }
 
 func (s *Server) handleAdminListWorkers(w http.ResponseWriter, r *http.Request, p *Principal) error {

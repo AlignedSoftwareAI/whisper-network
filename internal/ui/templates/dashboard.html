@@ -22,6 +22,19 @@
   <div class="tile"><span class="big">{{.WorkersOnline}}</span><span>workers online</span>
     <small>{{.WorkersActive}} active · {{.WorkersPaused}} paused · {{if .WorkersPending}}<a href="/ui/workers">{{.WorkersPending}} pending</a>{{else}}0 pending{{end}}</small></div>
   <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span><span>audio-hours / hour</span><small>jobs completed in the last hour</small></div>
+  {{- with .Versions}}
+  <div class="tile fleet-versions" title="Versions run by active and paused workers, with how many run each. Worker versions are compared with this server's; mixed engine versions mix engines within transcripts' provenance.">
+    <span>Fleet versions</span>
+    <small>server <code>{{.Server}}</code></small>
+    <small class="worker-versions">{{range $i, $v := .Workers}}{{if $i}} · {{end}}<code>{{or .Version "unknown"}}</code> ×{{.Count}}
+      {{- if eq (print .Skew) "older"}} <span class="badge outdated">outdated</span>
+      {{- else if eq (print .Skew) "newer"}} newer than server
+      {{- else if eq (print .Skew) "differs"}} <span class="badge differs">differs</span>{{end}}
+    {{- else}}no workers{{end}}</small>
+    <small class="engine-versions">engine {{range $i, $v := .Engines}}{{if $i}} · {{end}}<code>{{or .Version "unknown"}}</code> ×{{.Count}}{{else}}—{{end}}
+      {{- if .EngineMix}} <span class="badge version-mix" title="Workers run different whisper.cpp versions: one job's transcript may mix engines (DESIGN.md §8.4)">mixed</span>{{end}}</small>
+  </div>
+  {{- end}}
 </section>
 
 <section class="card">

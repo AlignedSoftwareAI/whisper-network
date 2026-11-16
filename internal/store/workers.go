@@ -139,6 +139,15 @@ func (s *Store) WorkerByID(ctx context.Context, id string) (*Worker, error) {
 	return w, nil
 }
 
+// WorkerByID is Store.WorkerByID inside the transaction.
+func (t *Tx) WorkerByID(ctx context.Context, id string) (*Worker, error) {
+	w, err := scanWorker(t.tx.QueryRowContext(ctx, workerSelect+` WHERE w.id = ?`, id))
+	if err != nil {
+		return nil, notFound(err, "worker "+id)
+	}
+	return w, nil
+}
+
 // WorkerByTokenHash returns the worker owning a token. Rejected workers'
 // tokens are revoked, so they are reported as ErrNotFound.
 func (s *Store) WorkerByTokenHash(ctx context.Context, hash string) (*Worker, error) {

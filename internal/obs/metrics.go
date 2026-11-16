@@ -38,6 +38,9 @@ var (
 type Metrics struct {
 	set  *metrics.Set
 	snap atomic.Pointer[Snapshot]
+	// version is the server's own version, for whisper_server_info; nil
+	// until SetServerVersion.
+	version atomic.Pointer[string]
 }
 
 // NewMetrics registers the catalog's snapshot gauges on set and returns the
@@ -47,6 +50,9 @@ func NewMetrics(set *metrics.Set) *Metrics {
 	set.RegisterMetricsWriter(m.writeSnapshot)
 	return m
 }
+
+// SetServerVersion sets the version reported by whisper_server_info.
+func (m *Metrics) SetServerVersion(v string) { m.version.Store(&v) }
 
 // Set returns the underlying set.
 func (m *Metrics) Set() *metrics.Set { return m.set }

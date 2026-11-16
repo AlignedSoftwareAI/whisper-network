@@ -12,6 +12,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/version"
 )
 
 // workersView is the workers table.
@@ -19,6 +20,9 @@ type workersView struct {
 	Rows   []workerRow
 	State  string // the state filter in force; empty for all
 	States []api.WorkerState
+	// ServerVersion is the server's own version, which the Version column
+	// compares against.
+	ServerVersion string
 }
 
 // workerRow is one row of the workers table. CSRF is carried per row
@@ -47,6 +51,12 @@ type workerRow struct {
 	// it did not); FailureStreak and StreakJobs are its current streak.
 	PauseReason               string
 	FailureStreak, StreakJobs int
+	// Version is the worker's whisper-network version, Skew how it
+	// compares with the server's (ServerVersion); EngineVersion and
+	// FFmpegVersion go in the column's tooltip.
+	Version, EngineVersion, FFmpegVersion string
+	ServerVersion                         string
+	Skew                                  version.Skew
 
 	// Compact controls, each shown only when the principal may use it.
 	CanApprove          bool // links to the detail page's approve form
@@ -119,7 +129,7 @@ func (u *UI) handleWorkers(w http.ResponseWriter, r *http.Request, rc *reqCtx) e
 	if !mayListWorkers(rc.P) {
 		return u.deny(r, rc, "worker_admin or queue_admin required")
 	}
-	v := workersView{States: workerStates}
+	v := workersView{States: workerStates, ServerVersion: u.srv.Version()}
 	if s := r.URL.Query().Get("state"); s != "" {
 		if !slices.Contains(workerStates, api.WorkerState(s)) {
 			return badRequest("Unknown worker state.")
@@ -231,7 +241,9 @@ func (u *UI) workerRowFor(rc *reqCtx, wk *store.Worker, process []api.Grant) wor
 	row := workerRow{CSRF: rc.CSRF, ID: wk.ID, Name: workerName(wk), State: wk.State,
 		Sandbox: wk.Facts.SandboxLevel, Slots: wk.Facts.Slots, LastSeenAt: wk.LastSeenAt,
 		Online: isOnline(wk, u.srv.Now()), Stats: newWorkStats(wk.Stats), PauseReason: wk.PauseReason,
-		FailureStreak: wk.FailureStreak, StreakJobs: wk.StreakJobs}
+		FailureStreak: wk.FailureStreak, StreakJobs: wk.StreakJobs,
+		Version: wk.Facts.Version, EngineVersion: wk.Facts.EngineVersion, FFmpegVersion: wk.Facts.FFmpegVersion,
+		ServerVersion: u.srv.Version(), Skew: version.Compare(wk.Facts.Version, u.srv.Version())}
 	if row.Name == wk.Facts.Description && wk.Facts.Hostname != row.Name {
 		row.Hostname = wk.Facts.Hostname
 	}

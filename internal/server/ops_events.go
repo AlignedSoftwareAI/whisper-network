@@ -228,20 +228,37 @@ func (o *Ops) RegisterWorker(ctx context.Context, tokenHash string, facts api.Wo
 }
 
 // UpdateWorkerFacts replaces a worker's reported facts, audited as
-// worker.update_facts (actor a is normally the worker itself).
+// worker.update_facts (actor a is normally the worker itself). The detail
+// carries the new facts and, for each of version, engine_version and
+// ffmpeg_version that changed, its previous value under "old_<name>", so a
+// worker restarted on another build is traceable.
 func (o *Ops) UpdateWorkerFacts(ctx context.Context, a Actor, workerID string, facts api.WorkerFacts) error {
 	_, err := o.commit(ctx, a, func(tx *store.Tx, rec recorder) error {
+		old, err := tx.WorkerByID(ctx, workerID)
+		if err != nil {
+			return err
+		}
 		if err := tx.UpdateWorkerFacts(ctx, workerID, facts); err != nil {
 			return err
 		}
-		return rec("worker.update_facts", store.WorkerPrincipal(workerID), workerFactsDetail(facts))
+		d := workerFactsDetail(facts)
+		for name, v := range map[string][2]string{
+			"version":        {old.Facts.Version, facts.Version},
+			"engine_version": {old.Facts.EngineVersion, facts.EngineVersion},
+			"ffmpeg_version": {old.Facts.FFmpegVersion, facts.FFmpegVersion},
+		} {
+			if v[0] != v[1] {
+				d["old_"+name] = v[0]
+			}
+		}
+		return rec("worker.update_facts", store.WorkerPrincipal(workerID), d)
 	})
 	return err
 }
 
 func workerFactsDetail(f api.WorkerFacts) map[string]any {
 	return map[string]any{"hostname": f.Hostname, "sandbox_level": f.SandboxLevel, "version": f.Version,
-		"slots": f.Slots}
+		"engine_version": f.EngineVersion, "ffmpeg_version": f.FFmpegVersion, "slots": f.Slots}
 }
 
 // PrunePendingWorkers deletes pending workers not seen since cutoff, with

@@ -264,6 +264,14 @@ failures before work starts, so a misconfigured worker is paused even with one
 job queued. The Workers page shows
 the reason; resuming the worker clears it. `0` disables the breaker.
 
+**Version skew.** The Workers page shows each worker's whisper-network version
+(engine and ffmpeg versions on hover) against the server's own: an older
+worker is badged "outdated", a newer one noted "newer than server", and one
+that cannot be ordered (a no-tag or dirty build at the same point, an
+unrecognised string) marked "differs". Dev builds compare by base version,
+then commits since the tag. The dashboard's Fleet versions tile counts workers
+per version and flags a fleet running mixed whisper.cpp versions.
+
 **Sandbox levels.** Every ffmpeg and whisper-cli child runs under
 `whisper-network sandbox-exec`, which applies lowest CPU and I/O priority,
 `no_new_privs`, resource limits and Landlock filesystem rules, and (kernel 6.7
@@ -323,6 +331,7 @@ Client tokens (`wnc_...`) and worker tokens (`wnw_...`) go in
 | `POST /lease/{id}/heartbeat`, `PUT /lease/{id}/result`, `POST /lease/{id}/failure`, `DELETE /lease/{id}` | Lease lifecycle | worker |
 | `GET /models/{name}` | Pinned model file | worker |
 | `/admin/...` | Workers, queues, users, clients, grants, audit | user or client with admin roles |
+| `GET /admin/version` | The server's own version, `{"version":"v0.5.0"}`, to compare with workers' `facts.version` in `GET /admin/workers` | admin, worker_admin, queue_admin |
 | `GET /healthz`, `GET /readyz` | Liveness, readiness | none |
 | `/ui/` | Web UI | user |
 
@@ -493,6 +502,8 @@ Key series: `whisper_jobs`, `whisper_tasks`, `whisper_queue_backlog_cost`,
 `whisper_queue_oldest_pending_seconds`, `whisper_queue_eligible_workers`,
 `whisper_sched_served_cost_total`, `whisper_leases_ended_total`,
 `whisper_workers`, `whisper_worker_last_seen_timestamp_seconds`,
+`whisper_worker_info` (labels include `version`, `engine_version`),
+`whisper_server_info{version}`,
 `whisper_worker_slots_busy`, `whisper_task_realtime_factor`,
 `whisper_data_free_bytes`, `whisper_storage_bytes` (`kind="failed"`: media held
 for failed jobs), `whisper_failed_jobs_retryable`.

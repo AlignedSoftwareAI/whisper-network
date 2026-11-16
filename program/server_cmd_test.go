@@ -43,6 +43,7 @@ func TestServerCmdDefaultsAndConfig(t *testing.T) {
 	assert.Equal(t, int64(1<<30), cfg.MinFreeBytes)
 	assert.Equal(t, []string{"small.en"}, cfg.Models)
 	assert.True(t, cfg.CookieSecure, "https public URL")
+	assert.Equal(t, Version, cfg.Version, "the server reports its own build")
 	assert.Equal(t, 60*time.Minute, cfg.TaskTarget)
 	assert.Equal(t, 60*time.Second, cfg.ReadTimeout)
 	assert.Equal(t, int64(64<<10), cfg.MinTransferRate)

@@ -3,12 +3,15 @@ package ui
 import (
 	"context"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
 	"github.com/deweysasser/whisper-network/internal/media"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/version"
 )
 
 // throughputWindow is the window for audio-hours per hour.
@@ -31,6 +34,67 @@ type statsView struct {
 	AudioHoursPerHour             float64
 	ShareSpan                     time.Duration // 0: since server start
 	Generated                     time.Time
+	Versions                      fleetVersions
+}
+
+// fleetVersions is the "Fleet versions" tile: the distinct versions run by
+// active and paused workers (pending ones are unvetted self-reports,
+// rejected ones gone), with how many run each.
+type fleetVersions struct {
+	Server  string         // the server's own version
+	Workers []versionCount // whisper-network versions, compared with Server
+	Engines []versionCount // whisper.cpp versions
+	// EngineMix is set when workers run more than one engine version,
+	// which mixes engines within a transcript's provenance (§8.4).
+	EngineMix bool
+}
+
+// versionCount is one distinct version and how many workers run it. An
+// empty Version is a worker that reported none.
+type versionCount struct {
+	Version string
+	Count   int
+	Skew    version.Skew // against the server; whisper-network versions only
+}
+
+// countVersions tallies the fleet's versions, most common first, then by
+// version.
+func countVersions(workers []store.Worker, server string) fleetVersions {
+	out := fleetVersions{Server: server}
+	tally := func(m map[string]int) []versionCount {
+		var vs []versionCount
+		for v, n := range m {
+			vs = append(vs, versionCount{Version: v, Count: n})
+		}
+		slices.SortFunc(vs, func(a, b versionCount) int {
+			if a.Count != b.Count {
+				return b.Count - a.Count
+			}
+			return strings.Compare(a.Version, b.Version)
+		})
+		return vs
+	}
+	wn, eng := map[string]int{}, map[string]int{}
+	for i := range workers {
+		wk := &workers[i]
+		if wk.State != api.WorkerActive && wk.State != api.WorkerPaused {
+			continue
+		}
+		wn[wk.Facts.Version]++
+		eng[wk.Facts.EngineVersion]++
+	}
+	out.Workers, out.Engines = tally(wn), tally(eng)
+	for i := range out.Workers {
+		out.Workers[i].Skew = version.Compare(out.Workers[i].Version, server)
+	}
+	known := 0
+	for _, e := range out.Engines {
+		if e.Version != "" {
+			known++
+		}
+	}
+	out.EngineMix = known > 1
+	return out
 }
 
 // queueStatRow is one queue on the dashboard.
@@ -165,6 +229,7 @@ func (u *UI) stats(ctx context.Context) (*statsView, error) {
 			out.WorkersOnline++
 		}
 	}
+	out.Versions = countVersions(workers, u.srv.Version())
 	if out.AudioHoursPerHour, err = u.audioHoursPerHour(ctx, now); err != nil {
 		return nil, err
 	}

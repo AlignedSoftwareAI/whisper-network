@@ -36,6 +36,10 @@ import (
 // Config holds the server's tunables. Zero values select the defaults noted
 // on each field (see DefaultConfig).
 type Config struct {
+	// Version is the server's own whisper-network version, reported by
+	// GET /admin/version and whisper_server_info and compared with each
+	// worker's (version skew, §6.3). Empty means "unknown".
+	Version string
 	// DataDir is the data directory: free-space checks run against it and
 	// the model cache lives in DataDir/models. Required.
 	DataDir string
@@ -411,6 +415,10 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	if s.metrics == nil {
 		s.metrics = obs.NewMetrics(newMetricsSet())
 	}
+	if s.cfg.Version == "" {
+		s.cfg.Version = "unknown"
+	}
+	s.metrics.SetServerVersion(s.cfg.Version)
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -479,6 +487,9 @@ func New(cfg Config, deps Deps) (*Server, error) {
 
 // Handler returns the root HTTP handler (API, health and UI).
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// Version returns the server's own whisper-network version.
+func (s *Server) Version() string { return s.cfg.Version }
 
 // Metrics returns the server's metrics recorder, for the metrics listener.
 func (s *Server) Metrics() *obs.Metrics { return s.metrics }
