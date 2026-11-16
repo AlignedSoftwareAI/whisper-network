@@ -22,8 +22,8 @@ type jobView struct {
 	Ref  ref
 	// Error is the job's error with the workers it names as refs (#57).
 	Error []segment
-	// Submitter is who created the job (#60): a client is named and linked
-	// for those who may view clients (else "a client"), a user by name.
+	// Submitter is who created the job (#60, #82): a client is named for
+	// every viewer of the job and linked for client admins; a user by name.
 	Submitter *ref
 	Owner     string
 	Tasks     []taskRow
@@ -129,7 +129,7 @@ func (u *UI) handleJob(w http.ResponseWriter, r *http.Request, rc *reqCtx) error
 		v.Error = lb.withWorkers(*v.Job.Error, j.QueueName, failed)
 	}
 	if sub := v.Job.SubmittedBy; sub != nil && sub.Kind == "client" {
-		c := lb.client(sub.ID)
+		c := lb.submitter(sub.ID)
 		v.Submitter = &c
 	}
 

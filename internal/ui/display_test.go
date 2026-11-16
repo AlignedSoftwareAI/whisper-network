@@ -171,6 +171,9 @@ func TestLabeler(t *testing.T) {
 		a.principal("client:cli_8a6a5685ffff"))
 	assert.Equal(t, "revoked", a.client("cli_revokedxxxxx").Note)
 	assert.Equal(t, ref{Name: "a client", Muted: true}, v.client("cli_8a6a5685ffff"))
+	assert.Equal(t, ref{Name: "transcriber", Short: "cli_8a6a…", Title: "cli_8a6a5685ffff"}, v.submitter("cli_8a6a5685ffff"),
+		"a job's submitter is named to its viewers (#82), unlinked without client_admin")
+	assert.Equal(t, "/ui/clients/cli_8a6a5685ffff", a.submitter("cli_8a6a5685ffff").Href)
 	assert.Equal(t, ref{Name: "alice", Note: "user"}, a.principal("user:alice"))
 	assert.Equal(t, ref{Name: "public", Note: "queue", Href: "/ui/queues/public"}, a.principal("queue:public"))
 	assert.Equal(t, ref{Name: "system"}, a.principal("system"))
@@ -226,8 +229,10 @@ func TestLabelsRendered(t *testing.T) {
 	assert.Contains(t, body, `href="/ui/clients/`+owner+`"`, "root sees the submitting client, linked")
 
 	_, body = viewer.get("/ui/jobs/" + labelled.ID)
-	assert.Contains(t, body, `<dt>Submitted by</dt><dd><span class="ref muted">a client</span></dd>`)
-	assert.NotContains(t, body, "/ui/clients/")
+	assert.Contains(t, body, `<dt>Submitted by</dt><dd><span class="ref" title="`+owner+`">`+html.EscapeString(adminClient[0].Name)+` <span class="muted">(`,
+		"a viewer of the job sees which client submitted it (#82)")
+	assert.NotContains(t, body, `a client</span>`, "a viewer of the job sees who submitted it (#82)")
+	assert.NotContains(t, body, "/ui/clients/", "but no link to a client page it may not open")
 
 	_, body = root.get("/ui/workers/" + wid)
 	assert.Contains(t, body, `>weekly planning meeting <span class="muted">(`, "current leases by label")

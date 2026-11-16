@@ -17,7 +17,7 @@ import (
 // follows the visibility rules: a worker's identity only to those who may
 // see it (seesWorker, or mayViewWorker outside a job), a job's label only to
 // those who may see the job's content, a client's name only to client
-// admins.
+// admins, except as a job's submitter, which every viewer of the job sees.
 
 // ref is a named entity for display.
 type ref struct {
@@ -160,11 +160,27 @@ func (l *labeler) client(id string) ref {
 	if !l.rc.can(auth.ActViewClient, auth.Resource{ClientID: id}) {
 		return ref{Name: "a client", Muted: true}
 	}
+	return l.clientRef(id, true)
+}
+
+// submitter names the client that submitted a job the viewer may see. Its
+// name is part of the job document (submitted_by, #82), so it is shown to
+// every viewer of the job; only client admins get the link to the client's
+// page.
+func (l *labeler) submitter(id string) ref {
+	return l.clientRef(id, l.rc.can(auth.ActViewClient, auth.Resource{ClientID: id}))
+}
+
+// clientRef names a client, linked to its page when link is set.
+func (l *labeler) clientRef(id string, link bool) ref {
 	c, ok := l.clients[id]
 	if !ok {
 		return ref{Short: clientShort(id), Title: id, Note: "removed"}
 	}
-	r := ref{Name: c.Name, Short: clientShort(id), Title: id, Href: "/ui/clients/" + url.PathEscape(id)}
+	r := ref{Name: c.Name, Short: clientShort(id), Title: id}
+	if link {
+		r.Href = "/ui/clients/" + url.PathEscape(id)
+	}
 	if c.Revoked {
 		r.Note = "revoked"
 	}
