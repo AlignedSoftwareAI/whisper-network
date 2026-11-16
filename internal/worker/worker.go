@@ -47,6 +47,7 @@ type Worker struct {
 	cache    *ModelCache
 	disk     *diskMeter
 	gate     *diskGate
+	load     *loadGate
 	children children
 	busy     atomic.Int32
 
@@ -114,6 +115,8 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	w.disk = newDiskMeter(w.cfg.StateDir, w.modelDir(), w.workRoot(), w.cfg.Catalog, w.cfg.FreeBytes)
 	w.gate = newDiskGate(w.disk, w.cfg.DiskReserve)
+	// Early, so the load meter has a reading by the time slots start.
+	w.load = w.newLoadGate()
 	if err := w.shareWithChildren(); err != nil {
 		return err
 	}

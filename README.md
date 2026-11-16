@@ -314,6 +314,7 @@ Client tokens (`wnc_...`) and worker tokens (`wnw_...`) go in
 | `POST /client`, `GET /client/{id}`, `DELETE /client/{id}` | Manage client tokens | client_admin |
 | `POST /worker`, `GET/PATCH /worker/{id}` | Register; read or update own facts | worker |
 | `POST /worker/{id}/leases?wait=` | Claim a task (long poll) | worker |
+| `POST /worker/{id}/gauges` | Report gauges without claiming (a worker whose host is busy) | worker |
 | `GET /lease/{id}/input` | Task input | worker |
 | `POST /lease/{id}/heartbeat`, `PUT /lease/{id}/result`, `POST /lease/{id}/failure`, `DELETE /lease/{id}` | Lease lifecycle | worker |
 | `GET /models/{name}` | Pinned model file | worker |
@@ -388,6 +389,8 @@ for the authoritative list.
 | `--memory` | probed | `WHISPER_MEMORY` | Override the probed memory limit; required where it cannot be probed |
 | `--disk-reserve` | `1GiB` | `WHISPER_DISK_RESERVE` | Disk kept free on the `--state` filesystem; a task whose input and expected output would not fit above it is handed back unrun |
 | `--model-cache-max` | `0` (unlimited) | `WHISPER_MODEL_CACHE_MAX` | Cap on the model cache; least recently used models not in use are evicted |
+| `--max-host-load` | `70` | `WHISPER_MAX_HOST_LOAD` | Stop claiming new tasks while the host's CPU use by other processes (percent, 1-minute average, excluding this worker and its children) is above this; running tasks continue. `0` disables. Linux only |
+| `--max-host-load-resume` | `60` | `WHISPER_MAX_HOST_LOAD_RESUME` | Resume claiming once that load falls below this (at most `--max-host-load`) |
 | `--kinds` | `prepare,transcribe` | `WHISPER_KINDS` | Task kinds to accept |
 | `--whisper-cli` | `whisper-cli` | `WHISPER_WHISPER_CLI` | whisper-cli binary |
 | `--ffmpeg` | `ffmpeg` | `WHISPER_FFMPEG` | ffmpeg binary |

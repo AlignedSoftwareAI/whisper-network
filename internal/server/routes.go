@@ -33,6 +33,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /worker/{id}", s.authed(anyKind, s.handleGetWorker))
 	mux.Handle("PATCH /worker/{id}", s.authed(workerOnly, s.handlePatchWorker))
 	mux.Handle("POST /worker/{id}/leases", s.authed(workerOnly, s.handleClaim))
+	mux.Handle("POST /worker/{id}/gauges", s.authed(workerOnly, s.handleGauges))
 	mux.Handle("GET /lease/{id}/input", s.authed(workerOnly, s.handleInput))
 	mux.Handle("POST /lease/{id}/heartbeat", s.authed(workerOnly, s.handleHeartbeat))
 	mux.Handle("PUT /lease/{id}/result", s.authed(workerOnly, s.handleLeaseResult))

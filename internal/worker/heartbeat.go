@@ -79,5 +79,6 @@ func (w *Worker) gauges() api.Gauges {
 	if w.disk != nil {
 		w.disk.read().gauges(&g)
 	}
+	w.load.gauges(&g)
 	return g
 }

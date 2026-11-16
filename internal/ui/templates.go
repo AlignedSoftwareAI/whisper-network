@@ -54,8 +54,14 @@ func (u *UI) funcs() template.FuncMap {
 			}
 			return formatBytes(*n)
 		},
-		"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
-		"num":   func(f float64) string { return fmt.Sprintf("%.1f", f) },
+		"pct": func(f float64) string { return fmt.Sprintf("%.0f%%", f) },
+		"num": func(f float64) string { return fmt.Sprintf("%.1f", f) },
+		"pctp": func(f *float64) string {
+			if f == nil {
+				return "?"
+			}
+			return fmt.Sprintf("%.0f%%", *f)
+		},
 		"hours": formatHours,
 		"join":  strings.Join,
 		"short": shortID,

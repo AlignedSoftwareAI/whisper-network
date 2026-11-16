@@ -58,6 +58,17 @@ type Config struct {
 	WhisperCLI, FFmpeg string
 	// EngineVersion overrides the version reported by whisper-cli.
 	EngineVersion string
+	// MaxHostLoad is the host CPU utilisation, in percent and excluding
+	// this worker's own process tree, above which slots stop claiming new
+	// work (DESIGN.md §7.3). 0 disables the check.
+	MaxHostLoad float64
+	// MaxHostLoadResume is the utilisation below which a slot stopped by
+	// MaxHostLoad claims again; at most MaxHostLoad.
+	MaxHostLoadResume float64
+	// HostLoad returns the host CPU utilisation in percent, excluding the
+	// worker's own process tree, and whether it is known (default: measured
+	// from /proc over the last minute on Linux, unknown elsewhere).
+	HostLoad func() (float64, bool)
 	// Drain makes shutdown finish running tasks instead of releasing them.
 	Drain bool
 	// ChildUID and ChildGID are the identity children run as. A worker
@@ -155,6 +166,9 @@ func (c *Config) setDefaults() error {
 	}
 	if err := checkChildIdentity(geteuid(), c.ChildUID, c.ChildGID); err != nil {
 		return err
+	}
+	if err := CheckHostLoad(c.MaxHostLoad, c.MaxHostLoadResume); err != nil {
+		return fmt.Errorf("worker: %w", err)
 	}
 	def := func(p *int, v int) {
 		if *p <= 0 {
