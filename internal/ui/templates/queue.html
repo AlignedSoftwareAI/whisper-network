@@ -13,12 +13,41 @@
   </form>
   {{else}}
   <dl class="facts">
-    <dt>Description</dt><dd>{{$q.Description}}</dd>
-    <dt>Weight</dt><dd>{{$q.Weight}}</dd>
-    <dt>Upload cap</dt><dd>{{if $q.MaxUploadBytes}}{{bytes $q.MaxUploadBytes}}{{else}}default{{end}}</dd>
+    {{template "dt" (col "queuefact.desc")}}<dd>{{$q.Description}}</dd>
+    {{template "dt" (col "queuefact.weight")}}<dd>{{$q.Weight}}</dd>
+    {{template "dt" (col "queuefact.cap")}}<dd>{{if $q.MaxUploadBytes}}{{bytes $q.MaxUploadBytes}}{{else}}default{{end}}</dd>
   </dl>
   {{end}}
 </section>
+
+{{with .Data.Pending}}
+<section class="card" id="pending">
+  <h2>Pending</h2>
+  <p class="pending-summary">{{if .Tasks}}<strong>{{.Tasks}}</strong> pending task{{if ne .Tasks 1}}s{{end}}: {{.Transcribe}} transcribe, {{.Prepare}} prepare
+    · {{hours .AudioHours}} h of audio · oldest waiting {{dur .Oldest}}{{else}}No pending tasks.{{end}}</p>
+  <p class="eligible">Eligible workers: <strong>{{.Eligible}}</strong>{{if .Eligible}} · slots {{.EligibleCap.InUse}}/{{.EligibleCap.Total}} in use{{end}}
+    <span class="muted small">(active, seen recently, holding process on this queue)</span></p>
+  {{if and .Tasks (not .Eligible)}}<p class="warn no-eligible" role="status" title="{{vhelp "badge" "noeligible"}}">No active worker may process this queue: its pending tasks cannot run until a worker is approved for it, or one comes back online.</p>{{end}}
+  {{with .Groups}}
+  <div class="scroll">
+  <table class="data pending">
+    <thead><tr>{{template "th" (col "pending.kind")}}{{template "th" (col "pending.model")}}{{template "th" (col "pending.weight")}}{{template "th" (col "pending.tasks" "n")}}{{template "th" (col "pending.audio" "n")}}{{template "th" (col "pending.oldest" "n")}}{{template "th" (col "pending.why")}}</tr></thead>
+    <tbody>
+    {{range .}}
+    <tr>
+      <td>{{.Kind}}</td><td>{{.Model}}</td><td>{{.Weight}}</td>
+      <td class="n">{{.Tasks}}</td>
+      <td class="n">{{if eq (print .Kind) "transcribe"}}{{secs .AudioS}}{{else}}—{{end}}</td>
+      <td class="n">{{dur .Oldest}}</td>
+      <td class="small">{{with .Reasons}}<ul class="reasons">{{range .}}<li class="warn">{{.}}</li>{{end}}</ul>{{else}}<span class="muted">waiting its turn</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+</section>
+{{end}}
 
 <section class="card" id="jobs">
   <h2>Jobs</h2>
@@ -42,23 +71,24 @@
   <input type="hidden" name="state" value="{{.Data.State}}">
   <div class="scroll">
   <table class="data">
-    <thead><tr><th><input type="checkbox" data-select-page aria-label="Select all on this page" hidden></th><th>Job</th><th>Label</th><th>State</th><th>Weight</th><th>Model</th><th class="n">Audio</th><th class="n">Tasks</th><th>Workers</th><th>Created</th></tr></thead>
+    <thead><tr><th scope="col" title="{{(col "queue.select").Help}}"><input type="checkbox" data-select-page aria-label="Select all on this page" aria-describedby="help-queue-select" hidden><span class="colhelp-text" id="help-queue-select" hidden>{{(col "queue.select").Help}}</span><button type="button" class="colhelp" aria-label="About Select" aria-describedby="help-queue-select" aria-controls="help-queue-select" aria-expanded="false">ⓘ</button></th>{{template "th" (col "queue.job")}}{{template "th" (col "queue.state")}}{{template "th" (col "queue.weight")}}{{template "th" (col "queue.model")}}{{template "th" (col "queue.audio" "n")}}{{template "th" (col "queue.tasks" "n")}}{{template "th" (col "queue.workers")}}{{template "th" (col "queue.created")}}</tr></thead>
     <tbody>
     {{range .Data.Jobs}}
     <tr>
-      <td><input type="checkbox" name="job_id" value="{{.ID}}" aria-label="Select job {{short .ID}}"></td>
-      <td><a href="/ui/jobs/{{.ID}}" title="{{.ID}}"><code>{{short .ID}}</code></a></td>
-      <td>{{.Label}}</td>
-      <td><span class="badge job-{{.State}}">{{.State}}</span>{{if .Retries}} <span class="muted small">retried {{.Retries}}×</span>{{end}}</td>
+      <td><input type="checkbox" name="job_id" value="{{.ID}}" aria-label="Select job {{or .Ref.Name .Ref.Short}}"></td>
+      <td class="job">{{template "ref" .Ref}}</td>
+      <td><span class="badge job-{{.State}}" title="{{vhelp "job" .State}}">{{.State}}</span>{{if .Retries}} <span class="muted small">retried {{.Retries}}×</span>{{end}}</td>
       <td>{{.Weight}}</td>
       <td>{{.Model}}</td>
       <td class="n">{{if .Media.DurationS}}{{secs .Media.DurationS}}{{else}}—{{end}}</td>
-      <td class="n">{{.Tasks.Done}}/{{.Tasks.Total}}</td>
+      <td class="n tasks">{{.Tasks.Done}}/{{.Tasks.Total}}
+        {{- if or .Tasks.Pending .Tasks.Leased .Tasks.Failed}}<div class="muted small">{{.Tasks.Pending}} pending · {{.Tasks.Leased}} leased · {{.Tasks.Failed}} failed</div>{{end}}
+        {{- if .Waiting}}<div class="small warn waiting">waiting {{dur .Waiting}}</div>{{end}}</td>
       <td class="workers">{{template "job-workers" .Workers}}</td>
       <td>{{when .CreatedAt}}</td>
     </tr>
     {{else}}
-    <tr><td colspan="10" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
+    <tr><td colspan="9" class="muted">No jobs{{if .Data.State}} in state {{.Data.State}}{{end}}.</td></tr>
     {{end}}
     </tbody>
   </table>
@@ -89,11 +119,11 @@
   <h2>Access</h2>
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>Principal</th><th>Role</th><th></th></tr></thead>
+    <thead><tr>{{template "th" (col "access.principal")}}{{template "th" (col "access.role")}}{{template "th" (col "access.actions")}}</tr></thead>
     <tbody>
     {{range .Data.Grants}}
     <tr>
-      <td><code>{{.Principal}}</code></td>
+      <td>{{template "ref" .Ref}}</td>
       <td>{{.Role}}</td>
       <td>{{if .CanRevoke}}{{template "revoke" (dict "G" . "CSRF" $.CSRF "Back" $.Data.Back)}}{{end}}</td>
     </tr>
@@ -120,7 +150,7 @@
 {{/* The Workers cell of a job row (jobWorkers): named workers link to their
      card on the workers page; workers the viewer may not see are counted. */}}
 {{define "job-workers"}}
-{{- range $i, $w := .Workers}}{{if $i}}, {{end}}<a href="/ui/workers/{{$w.ID}}" title="{{$w.ID}}">{{$w.Name}}</a>{{end}}
+{{- range $i, $w := .Workers}}{{if $i}}, {{end}}{{template "ref" $w}}{{end}}
 {{- if .Running}}{{if .Workers}}, {{end}}<span class="muted">{{if gt .Running 1}}{{.Running}} running{{else}}running{{end}}</span>{{end}}
 {{- if not (or .Workers .Running)}}<span class="muted">—</span>{{end}}
 {{- end}}

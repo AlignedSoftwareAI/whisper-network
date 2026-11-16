@@ -244,8 +244,8 @@ func (t *Tx) CreateJob(ctx context.Context, nj NewJob) (job *Job, created bool, 
 		return nil, false, fmt.Errorf("create job: %w", err)
 	}
 	if nj.Canonical == nil {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (job_id, seq, kind, cost, state) VALUES (?,0,?,?,?)`,
-			nj.ID, string(api.KindPrepare), s.cfg.PrepareCost, string(api.TaskPending)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (job_id, seq, kind, cost, state, pending_since)
+			VALUES (?,0,?,?,?,?)`, nj.ID, string(api.KindPrepare), s.cfg.PrepareCost, string(api.TaskPending), now); err != nil {
 			return nil, false, fmt.Errorf("create prepare task: %w", err)
 		}
 	} else if err := s.insertTranscribeTasks(ctx, tx, nj.ID, p.Model, nj.Ranges); err != nil {
@@ -259,10 +259,11 @@ func (t *Tx) CreateJob(ctx context.Context, nj NewJob) (job *Job, created bool, 
 }
 
 func (s *Store) insertTranscribeTasks(ctx context.Context, tx *sql.Tx, jobID, model string, rs []SampleRange) error {
+	now := toMS(s.now())
 	for i, r := range rs {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (job_id, seq, kind, start_sample, end_sample, cost, state)
-			VALUES (?,?,?,?,?,?,?)`, jobID, i+1, string(api.KindTranscribe), r.Start, r.End,
-			s.TranscribeCost(model, r.End-r.Start), string(api.TaskPending)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (job_id, seq, kind, start_sample, end_sample, cost, state,
+			pending_since) VALUES (?,?,?,?,?,?,?,?)`, jobID, i+1, string(api.KindTranscribe), r.Start, r.End,
+			s.TranscribeCost(model, r.End-r.Start), string(api.TaskPending), now); err != nil {
 			return fmt.Errorf("create transcribe task %d: %w", i+1, err)
 		}
 	}

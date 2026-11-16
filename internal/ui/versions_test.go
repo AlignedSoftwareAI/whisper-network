@@ -76,7 +76,7 @@ func TestWorkersVersionColumn(t *testing.T) {
 	b := f.login("root")
 	resp, body := b.get("/ui/workers")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Contains(t, body, `<th scope="col" title="whisper-network version, compared with this server's (`+esc(serverVersion)+`)`)
+	assert.Contains(t, body, `aria-describedby="help-workers-version"`, "the Version column explains itself (#79)")
 
 	title, cell := versionCell(t, body, f.same)
 	assert.Equal(t, "engine 1.7.4 · ffmpeg 7.1", title)

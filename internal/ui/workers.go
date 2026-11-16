@@ -37,6 +37,7 @@ type workersView struct {
 type workerRow struct {
 	CSRF       string
 	ID         string
+	Ref        ref    // the worker as a ref: Name and the short id (#57)
 	Name       string // description, else hostname, else the short id
 	Hostname   string // shown under Name when Name is the description
 	State      api.WorkerState
@@ -244,6 +245,7 @@ func (u *UI) workerRowFor(rc *reqCtx, wk *store.Worker, process []api.Grant) wor
 		FailureStreak: wk.FailureStreak, StreakJobs: wk.StreakJobs,
 		Version: wk.Facts.Version, EngineVersion: wk.Facts.EngineVersion, FFmpegVersion: wk.Facts.FFmpegVersion,
 		ServerVersion: u.srv.Version(), Skew: version.Compare(wk.Facts.Version, u.srv.Version())}
+	row.Ref = workerRef(store.WorkerRef{ID: wk.ID, Hostname: wk.Facts.Hostname, Description: wk.Facts.Description})
 	if row.Name == wk.Facts.Description && wk.Facts.Hostname != row.Name {
 		row.Hostname = wk.Facts.Hostname
 	}

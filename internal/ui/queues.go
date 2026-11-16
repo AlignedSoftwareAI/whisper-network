@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
@@ -45,14 +46,39 @@ type queueView struct {
 	CSRF     string
 	Script   string // URL of queue.js
 
+	// Pending is the pending-work summary (#54), for those who see all
+	// the queue's jobs.
+	Pending *pendingView
+
 	CanManageGrants bool
 	Grants          []grantRow
 	GrantRoles      []api.Role // roles the principal may hand out here
 	Back            string
 }
 
+// pendingView summarizes a queue's pending tasks (#54).
+type pendingView struct {
+	Tasks       int
+	Prepare     int // pending prepare tasks
+	Transcribe  int // pending transcribe tasks
+	AudioHours  float64
+	Oldest      time.Duration // the longest wait, 0 if nothing is pending
+	Eligible    int           // active workers seen recently with process on the queue
+	EligibleCap store.SlotCount
+	Groups      []pendingRow
+}
+
+// pendingRow is the pending tasks of one kind, model and weight class.
+type pendingRow struct {
+	store.PendingGroup
+	AudioS  float64
+	Oldest  time.Duration
+	Reasons []string
+}
+
 // grantRow is one principal's role on a scope, with a revoke control.
 type grantRow struct {
+	Ref       ref    // the principal, named (#57, #60)
 	Principal string // wire form: user:<name>, client:<id>, worker:<id>
 	Role      api.Role
 	Scope     string
@@ -122,6 +148,11 @@ func (u *UI) handleQueue(w http.ResponseWriter, r *http.Request, rc *reqCtx) err
 			return err
 		}
 	}
+	if v.Visibility == auth.SeesAll {
+		if v.Pending, err = u.queuePending(ctx, q); err != nil {
+			return err
+		}
+	}
 	if rc.can(auth.ActGrantQueueRole, res) {
 		v.CanManageGrants = true
 		if v.Grants, err = u.queueGrants(ctx, rc, q); err != nil {
@@ -135,6 +166,36 @@ func (u *UI) handleQueue(w http.ResponseWriter, r *http.Request, rc *reqCtx) err
 	}
 	u.render(w, r, rc, http.StatusOK, "queue", "Queue "+q.Name, v)
 	return nil
+}
+
+// queuePending summarizes q's pending tasks: two aggregate queries (the
+// pending groups and the eligible workers), whatever the backlog.
+func (u *UI) queuePending(ctx context.Context, q *store.Queue) (*pendingView, error) {
+	groups, err := u.srv.Store().QueuePending(ctx, q.ID)
+	if err != nil {
+		return nil, err
+	}
+	fleet, err := u.queueFleet(ctx, q.Name, q.ID)
+	if err != nil {
+		return nil, err
+	}
+	now := u.srv.Now()
+	v := &pendingView{Eligible: len(fleet.workers)}
+	v.EligibleCap = store.FleetCapacity(fleet.workers, now, onlineWindow, fleet.prepareMin).All
+	for _, g := range groups {
+		row := pendingRow{PendingGroup: g, AudioS: samplesToSeconds(g.AudioSamples),
+			Oldest: max(now.Sub(g.OldestSince), 0), Reasons: fleet.waitingReasons(g.Kind, g.Model, nil)}
+		v.Tasks += g.Tasks
+		if g.Kind == api.KindPrepare {
+			v.Prepare += g.Tasks
+		} else {
+			v.Transcribe += g.Tasks
+		}
+		v.AudioHours += row.AudioS / 3600
+		v.Oldest = max(v.Oldest, row.Oldest)
+		v.Groups = append(v.Groups, row)
+	}
+	return v, nil
 }
 
 // The queue page's orders (#67). The URL carries the API's parameters
@@ -284,6 +345,7 @@ func (u *UI) queueGrants(ctx context.Context, rc *reqCtx, q *store.Queue) ([]gra
 		names[users[i].Principal()] = "user:" + users[i].Username
 	}
 	var out []grantRow
+	var ids labelIDs
 	scope := auth.QueueScope(q.Name)
 	for _, role := range []api.Role{api.RoleQueueAdmin, api.RoleSubmit, api.RoleViewAll, api.RoleReadAll, api.RoleDeleteAll, api.RoleProcess} {
 		ps, err := st.PrincipalsWithRole(ctx, role, store.QueueScope(q.ID))
@@ -294,9 +356,17 @@ func (u *UI) queueGrants(ctx context.Context, rc *reqCtx, q *store.Queue) ([]gra
 			if n, ok := names[p]; ok {
 				p = n
 			}
+			ids.principal(p)
 			out = append(out, grantRow{Principal: p, Role: role, Scope: scope,
 				CanRevoke: auth.CanGrantTo(rc.P.Principal, []api.Grant{{Role: role, Scope: scope}}) == nil})
 		}
+	}
+	lb, err := u.labels(ctx, rc, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Ref = lb.principal(out[i].Principal)
 	}
 	return out, nil
 }

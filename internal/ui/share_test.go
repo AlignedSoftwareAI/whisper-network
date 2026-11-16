@@ -90,11 +90,13 @@ func TestDashboardNumbers(t *testing.T) {
 
 	b := e.login("root")
 	_, body := b.get("/ui/")
+	body = plainHelp(body)
 	assert.Regexp(t, `<span class="big">3</span><span>pending tasks</span>`, body)
 
 	e.runJob(wid, wtok)
 	resp, body := b.get("/ui/dashboard/stats")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body = plainHelp(body)
 	// 3 jobs × 12 s of audio in the last hour: 0.01 h/h.
 	assert.Contains(t, body, `<span class="big">0.01</span><span>audio-hours / hour</span>`)
 	assert.Contains(t, body, "since the server started")

@@ -72,9 +72,9 @@ func TestWorkersTable(t *testing.T) {
 	assert.Equal(t, []string{"pending", "active", "paused", "rejected"}, states)
 
 	row := rowOf(t, body, f.active)
-	assert.Contains(t, row, `<a href="/ui/workers/`+f.active+`" title="`+f.active+`">active-host</a>`,
+	assert.Contains(t, row, `<a class="ref" href="/ui/workers/`+f.active+`" title="`+f.active+`">active-host <span class="muted">(`+shortID(f.active)+`)</span></a>`,
 		"no description: named by hostname")
-	assert.Contains(t, row, `<span class="badge state-active">active</span>`)
+	assert.Contains(t, row, `<span class="badge state-active" title="Approved and taking work.">active</span>`)
 	assert.Contains(t, row, `<span class="chip">public</span>`)
 	assert.Contains(t, row, `<span class="badge sandbox-full">full</span>`)
 	assert.Contains(t, row, ">1/1</td>", "busy/total from the gauges")
@@ -109,7 +109,7 @@ func TestWorkersTableNaming(t *testing.T) {
 	described, _ := e.worker("box-1", "the garage box")
 	b := e.login("root")
 	_, body := b.get("/ui/workers")
-	assert.Contains(t, rowOf(t, body, described), `>the garage box</a><div class="muted small">box-1</div>`)
+	assert.Contains(t, rowOf(t, body, described), `>the garage box <span class="muted">(`+shortID(described)+`)</span></a><div class="muted small">box-1</div>`)
 
 	// Registration requires a hostname; the id is the last resort.
 	const id = "0123456789abcdef-0123"
@@ -264,8 +264,7 @@ func TestWorkersPageStats(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	body = collapse.ReplaceAllString(body, " ")
 	for _, want := range []string{
-		`<th scope="col" class="n">Tasks done</th>`, `<th scope="col" class="n">Audio hours</th>`,
-		`>Avg RTF</th>`, `>Failure rate</th>`,
+		`>Tasks done<button`, `>Audio hours<button`, `>Avg RTF<button`, `>Failure rate<button`,
 	} {
 		assert.Contains(t, body, want)
 	}
@@ -287,7 +286,7 @@ func TestWorkersPageStats(t *testing.T) {
 	// The worker's page has the full breakdown.
 	resp, body = b.get("/ui/workers/" + wid)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	body = collapse.ReplaceAllString(body, " ")
+	body = plainHelp(collapse.ReplaceAllString(body, " "))
 	for _, want := range []string{
 		`<h2>Statistics</h2>`,
 		`<dt>Tasks done</dt><dd>1 (0 prepare, 1 transcribe) in 1 jobs</dd>`,
@@ -301,7 +300,7 @@ func TestWorkersPageStats(t *testing.T) {
 	assert.NotContains(t, body, `<dt>Last task</dt><dd><span class="muted">never`)
 
 	_, body = b.get("/ui/workers/" + idle)
-	body = collapse.ReplaceAllString(body, " ")
+	body = plainHelp(collapse.ReplaceAllString(body, " "))
 	assert.Contains(t, body, `<dt>Realtime factor</dt><dd><span class="muted">none yet</span></dd>`)
 	assert.Contains(t, body, `<dt>Failures</dt><dd>0 failed, 0 expired</dd>`)
 	assert.Contains(t, body, `<dt>Last task</dt><dd><span class="muted">never</span></dd>`)
@@ -333,13 +332,13 @@ func TestWorkersPageAutoPaused(t *testing.T) {
 	resp, body := b.get("/ui/workers")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	body = regexp.MustCompile(`\s+`).ReplaceAllString(body, " ")
-	assert.Contains(t, body, `<span class="badge state-paused">paused</span> <span class="badge auto-paused" title="Paused by the circuit breaker: 2 consecutive failures across 2 jobs">auto</span>`)
+	assert.Contains(t, body, `>paused</span> <span class="badge auto-paused" title="Paused by the circuit breaker: 2 consecutive failures across 2 jobs">auto</span>`)
 
 	resp, body = b.get("/ui/workers/" + wid)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	body = regexp.MustCompile(`\s+`).ReplaceAllString(body, " ")
+	body = plainHelp(regexp.MustCompile(`\s+`).ReplaceAllString(body, " "))
 	for _, want := range []string{
-		`<span class="badge auto-paused">auto-paused</span>`,
+		`>auto-paused</span>`,
 		`Paused automatically by the circuit breaker: 2 consecutive failures across 2 jobs.`,
 		`<span class="streak">failure streak 2 in 2 jobs</span>`,
 		`<dt>Decided by</dt><dd>system `,

@@ -174,8 +174,8 @@ func (s *Store) endLease(ctx context.Context, tx *sql.Tx, l leaseRow, outcome ap
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'pending', attempts = ?,
-			error = COALESCE(?, error) WHERE job_id = ? AND seq = ? AND state = 'leased'`,
-			end.Attempt, errText, l.JobID, l.Seq); err != nil {
+			error = COALESCE(?, error), pending_since = ? WHERE job_id = ? AND seq = ? AND state = 'leased'`,
+			end.Attempt, errText, toMS(now), l.JobID, l.Seq); err != nil {
 			return nil, fmt.Errorf("requeue task: %w", err)
 		}
 		end.Requeued = true

@@ -25,6 +25,7 @@ type bulkView struct {
 	Done    bool
 	Summary string
 	Results []api.BulkJobResult
+	Refs    map[string]ref // each result's job, named (#58)
 }
 
 // maxBulkPages bounds the pages one confirmed all-matching action walks
@@ -91,6 +92,18 @@ func (u *UI) handleBulk(w http.ResponseWriter, r *http.Request, rc *reqCtx) erro
 		return err
 	}
 	v.Done, v.Results, v.Summary = true, res.Jobs, bulkSummary(res.Jobs)
+	var ids labelIDs
+	for _, j := range res.Jobs {
+		ids.job(j.JobID)
+	}
+	lb, err := u.labels(r.Context(), rc, ids)
+	if err != nil {
+		return err
+	}
+	v.Refs = make(map[string]ref, len(res.Jobs))
+	for _, j := range res.Jobs {
+		v.Refs[j.JobID] = lb.job(j.JobID)
+	}
 	u.render(w, r, rc, http.StatusOK, "bulk", "Bulk "+action, v)
 	return nil
 }

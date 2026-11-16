@@ -78,8 +78,8 @@ func (t *Tx) RetryJob(ctx context.Context, jobID string) (*Retried, error) {
 	if j.Canonical == nil {
 		out.State = api.JobPreparing
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'pending', attempts = 0, worker_id = NULL
-		WHERE job_id = ? AND state IN ('failed','cancelled')`, jobID)
+	res, err := tx.ExecContext(ctx, `UPDATE tasks SET state = 'pending', attempts = 0, worker_id = NULL,
+		pending_since = ? WHERE job_id = ? AND state IN ('failed','cancelled')`, toMS(t.s.now()), jobID)
 	if err != nil {
 		return nil, fmt.Errorf("retry job %s: %w", jobID, err)
 	}

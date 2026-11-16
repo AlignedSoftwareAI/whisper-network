@@ -1,15 +1,41 @@
 {{define "content"}}
 {{with .Data}}
 <p><a href="/ui/clients">← API clients</a></p>
-<h1>Client {{.Client.Name}}</h1>
-<p class="muted small">Client ID <code>{{.Client.ID}}</code> · created {{when .Client.CreatedAt}} · last used {{ago .Client.LastUsedAt}}</p>
-{{if .Saved}}<p class="saved" role="status">Permissions saved: {{.Added}} added, {{.Removed}} removed. The token is unchanged; the new permissions apply from its next request.</p>{{end}}
+<h1>Client {{.Client.Name}}{{if .Client.RevokedAt}} <span class="badge state-rejected" title="{{vhelp "badge" "revoked"}}">revoked</span>{{end}}</h1>
 <section class="card">
+  <dl class="facts client-facts">
+    {{template "dt" (col "clientfact.id")}}<dd><code>{{.Client.ID}}</code></dd>
+    {{template "dt" (col "clientfact.created")}}<dd>{{when .Client.CreatedAt}} by {{template "ref" .CreatedBy}}</dd>
+    {{template "dt" (col "clientfact.used")}}<dd>{{ago .Client.LastUsedAt}}</dd>
+    {{with .Client.RevokedAt}}{{template "dt" (col "clientfact.revoked")}}<dd>{{when .}}</dd>{{end}}
+    {{template "dt" (col "clientfact.roles")}}<dd>{{range .Client.Grants}}<span class="chip">{{.Role}} {{.Scope}}</span>{{else}}<span class="muted">none</span>{{end}}</dd>
+  </dl>
+</section>
+{{if .Saved}}<p class="saved" role="status">Permissions saved: {{.Added}} added, {{.Removed}} removed. The token is unchanged; the new permissions apply from its next request.</p>{{end}}
+{{if .CanEdit}}
+<section class="card">
+  <h2>Permissions</h2>
   <form method="post" action="/ui/clients/{{.Client.ID}}" class="stack">
     {{template "csrf" $.CSRF}}
     {{template "grant-matrix" .Grants}}
     <button type="submit">Save permissions</button>
   </form>
+</section>
+{{end}}
+<section class="card">
+  <h2>Recent activity</h2>
+  <div class="scroll">
+  <table class="data activity">
+    <thead><tr>{{template "th" (col "activity.time")}}{{template "th" (col "activity.action")}}{{template "th" (col "activity.target")}}</tr></thead>
+    <tbody>
+    {{range .Activity}}
+    <tr><td>{{when .TS}}</td><td>{{.Action}}</td><td>{{if .Target}}{{template "ref" .TargetRef}}{{end}}</td></tr>
+    {{else}}
+    <tr><td colspan="3" class="muted">No recorded activity.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
 </section>
 {{end}}
 {{end}}

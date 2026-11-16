@@ -66,6 +66,10 @@ func (u *UI) funcs() template.FuncMap {
 		"join":  strings.Join,
 		"short": shortID,
 		"dict":  dict,
+		// Column and value help (#79); see colhelp.go.
+		"col":     col,
+		"colText": colText,
+		"vhelp":   vhelp,
 	}
 }
 

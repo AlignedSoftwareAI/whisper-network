@@ -318,6 +318,7 @@ type view struct {
 	CSRF   string
 	Nav    navLinks
 	HTMX   string // asset URLs
+	JS     string
 	CSS    string
 	Active string // nav section
 	Data   any
@@ -343,7 +344,7 @@ func (rc *reqCtx) nav() navLinks {
 // render executes page's layout with data and writes it with status. Pages
 // are never cached: some carry one-time secrets.
 func (u *UI) render(w http.ResponseWriter, r *http.Request, rc *reqCtx, status int, page, title string, data any) {
-	v := view{Title: title, Nav: rc.nav(), HTMX: u.assetURL("htmx.min.js"), CSS: u.assetURL("style.css"),
+	v := view{Title: title, Nav: rc.nav(), HTMX: u.assetURL("htmx.min.js"), JS: u.assetURL("ui.js"), CSS: u.assetURL("style.css"),
 		Active: page, Data: data}
 	if rc != nil {
 		v.User, v.CSRF = rc.User.Username, rc.CSRF

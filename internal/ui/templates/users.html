@@ -13,7 +13,7 @@
 <section class="card">
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Created</th><th></th></tr></thead>
+    <thead><tr>{{template "th" (col "users.user")}}{{template "th" (col "users.status")}}{{template "th" (col "users.roles")}}{{template "th" (col "users.created")}}{{template "th" (col "users.actions")}}</tr></thead>
     <tbody>
     {{range .Data.Users}}
     <tr>

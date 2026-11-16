@@ -17,14 +17,24 @@
 {{define "stats"}}
 <div id="stats" hx-get="/ui/dashboard/stats" hx-trigger="every 15s" hx-swap="outerHTML">
 <section class="tiles" aria-label="Fleet">
-  <div class="tile"><span class="big">{{.RunningTasks}}</span><span>running tasks</span></div>
-  <div class="tile"><span class="big">{{.PendingTasks}}</span><span>pending tasks</span></div>
-  <div class="tile"><span class="big">{{.WorkersOnline}}</span><span>workers online</span>
+  <div class="tile"><span class="big">{{.RunningTasks}}</span>{{template "tile-label" (col "tile.running")}}</div>
+  <div class="tile"><span class="big">{{.PendingTasks}}</span>{{template "tile-label" (col "tile.pending")}}</div>
+  <div class="tile"><span class="big">{{.WorkersOnline}}</span>{{template "tile-label" (col "tile.online")}}
     <small>{{.WorkersActive}} active · {{.WorkersPaused}} paused · {{if .WorkersPending}}<a href="/ui/workers">{{.WorkersPending}} pending</a>{{else}}0 pending{{end}}</small></div>
-  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span><span>audio-hours / hour</span><small>jobs completed in the last hour</small></div>
+  {{- with .Capacity}}
+  <div class="tile capacity">
+    <span class="big">{{.All.InUse}}/{{.All.Total}}</span>{{template "tile-label" (col "tile.capacity")}}
+    <small class="available">{{.All.Available}} available{{if .All.Deferred}} · {{.All.Deferred}} deferred{{end}}</small>
+    <small class="by-kind">transcribe {{.Transcribe.InUse}}/{{.Transcribe.Total}} · prepare {{.Prepare.InUse}}/{{.Prepare.Total}}</small>
+    {{- if or .Paused .Pending .Offline}}
+    <small class="apart">{{if .Paused}}+{{.Paused}} slots paused{{end}}{{if and .Paused (or .Pending .Offline)}} · {{end}}{{if .Pending}}+{{.Pending}} pending{{end}}{{if and .Pending .Offline}} · {{end}}{{if .Offline}}+{{.Offline}} offline{{end}}</small>
+    {{- end}}
+  </div>
+  {{- end}}
+  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span>{{template "tile-label" (col "tile.audiorate")}}<small>jobs completed in the last hour</small></div>
   {{- with .Versions}}
-  <div class="tile fleet-versions" title="Versions run by active and paused workers, with how many run each. Worker versions are compared with this server's; mixed engine versions mix engines within transcripts' provenance.">
-    <span>Fleet versions</span>
+  <div class="tile fleet-versions">
+    {{template "tile-label" (col "tile.versions")}}
     <small>server <code>{{.Server}}</code></small>
     <small class="worker-versions">{{range $i, $v := .Workers}}{{if $i}} · {{end}}<code>{{or .Version "unknown"}}</code> ×{{.Count}}
       {{- if eq (print .Skew) "older"}} <span class="badge outdated">outdated</span>
@@ -42,8 +52,8 @@
   <div class="scroll">
   <table class="data">
     <thead><tr>
-      <th>Queue</th><th class="n">Preparing</th><th class="n">Queued</th><th class="n">Running</th><th class="n">Done</th><th class="n">Failed</th>
-      <th class="n">Pending tasks</th><th class="n">Leased</th><th class="n">Oldest pending</th><th class="n">Eligible workers</th>
+      {{template "th" (col "dash.queue")}}{{template "th" (col "dash.preparing" "n")}}{{template "th" (col "dash.queued" "n")}}{{template "th" (col "dash.running" "n")}}{{template "th" (col "dash.done" "n")}}{{template "th" (col "dash.failed" "n")}}
+      {{template "th" (col "dash.pending" "n")}}{{template "th" (col "dash.leased" "n")}}{{template "th" (col "dash.oldest" "n")}}{{template "th" (col "dash.eligible" "n")}}{{template "th" (col "dash.slots" "n")}}
     </tr></thead>
     <tbody>
     {{range .Queues}}
@@ -53,6 +63,7 @@
       <td class="n">{{.PendingTasks}}</td><td class="n">{{.LeasedTasks}}</td>
       <td class="n">{{if .PendingTasks}}{{dur .OldestPending}}{{else}}—{{end}}</td>
       <td class="n{{if and .PendingTasks (not .EligibleWorkers)}} warn{{end}}">{{.EligibleWorkers}}</td>
+      <td class="n slots{{if and .PendingTasks .EligibleSlots (ge .EligibleBusy .EligibleSlots)}} warn{{end}}">{{if .EligibleSlots}}{{.EligibleBusy}}/{{.EligibleSlots}}{{else}}—{{end}}</td>
     </tr>
     {{end}}
     </tbody>
@@ -66,7 +77,7 @@
   Actual share is the scheduling cost served {{if .ShareSpan}}over the last {{dur .ShareSpan}}{{else}}since the server started{{end}}.</p>
   <div class="scroll">
   <table class="data share">
-    <thead><tr><th>Queue</th><th class="n">Weight</th><th>Configured</th><th>Actual</th></tr></thead>
+    <thead><tr>{{template "th" (col "share.queue")}}{{template "th" (col "share.weight" "n")}}{{template "th" (col "share.configured")}}{{template "th" (col "share.actual")}}</tr></thead>
     <tbody>
     {{range .Queues}}
     <tr>

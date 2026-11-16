@@ -3,39 +3,39 @@
 <p class="small"><a href="/ui/workers">← Workers</a></p>
 <header class="row title">
   <h1>{{$w.Name}}</h1>
-  <span class="badge state-{{$w.State}}">{{$w.State}}</span>
-  {{if $w.PauseReason}}<span class="badge auto-paused">auto-paused</span>{{end}}
-  {{if $w.Online}}<span class="badge online">online</span>{{end}}
-  {{if and $w.Online $w.Gauges}}{{if $w.Gauges.DeferredForLoad}}<span class="badge host-busy">busy host</span>{{end}}{{end}}
+  <span class="badge state-{{$w.State}}" title="{{vhelp "worker" $w.State}}">{{$w.State}}</span>
+  {{if $w.PauseReason}}<span class="badge auto-paused" title="{{vhelp "badge" "auto"}}">auto-paused</span>{{end}}
+  {{if $w.Online}}<span class="badge online" title="{{vhelp "badge" "online"}}">online</span>{{end}}
+  {{if and $w.Online $w.Gauges}}{{if $w.Gauges.DeferredForLoad}}<span class="badge host-busy" title="{{vhelp "badge" "busyhost"}}">busy host</span>{{end}}{{end}}
 </header>
 {{with $w.PauseReason}}<p class="notice auto-paused">Paused automatically by the circuit breaker: {{.}}. It finishes its current tasks but takes no new ones until resumed; resuming clears the failure streak.</p>{{end}}
 
 <section class="card">
   <h2>Facts</h2>
   <dl class="facts">
-    <dt>ID</dt><dd><code>{{$w.ID}}</code></dd>
-    <dt>Hostname</dt><dd>{{$w.Facts.Hostname}}</dd>
-    <dt>Description</dt><dd>{{with $w.Facts.Description}}{{.}}{{else}}<span class="muted">none</span>{{end}}</dd>
-    <dt>CPU</dt><dd>{{with $w.Facts.CPUModel}}{{.}} · {{end}}{{$w.Facts.Cores}} cores</dd>
-    <dt>Memory</dt><dd>{{bytes $w.Facts.MemBytes}}</dd>
-    <dt>Platform</dt><dd>{{$w.Facts.OS}}/{{$w.Facts.Arch}}</dd>
-    <dt>Versions</dt><dd>{{with $w.Facts.Version}}whisper-network {{.}}{{else}}whisper-network <span class="muted">unknown</span>{{end}}
+    {{template "dt" (col "workerfact.id")}}<dd><code>{{$w.ID}}</code></dd>
+    {{template "dt" (col "workerfact.host")}}<dd>{{$w.Facts.Hostname}}</dd>
+    {{template "dt" (col "workerfact.desc")}}<dd>{{with $w.Facts.Description}}{{.}}{{else}}<span class="muted">none</span>{{end}}</dd>
+    {{template "dt" (col "workerfact.cpu")}}<dd>{{with $w.Facts.CPUModel}}{{.}} · {{end}}{{$w.Facts.Cores}} cores</dd>
+    {{template "dt" (col "workerfact.mem")}}<dd>{{bytes $w.Facts.MemBytes}}</dd>
+    {{template "dt" (col "workerfact.platform")}}<dd>{{$w.Facts.OS}}/{{$w.Facts.Arch}}</dd>
+    {{template "dt" (col "workerfact.versions")}}<dd>{{with $w.Facts.Version}}whisper-network {{.}}{{else}}whisper-network <span class="muted">unknown</span>{{end}}
       · engine {{with $w.Facts.EngineVersion}}{{.}}{{else}}<span class="muted">unknown</span>{{end}}
       · ffmpeg {{with $w.Facts.FFmpegVersion}}{{.}}{{else}}<span class="muted">unknown</span>{{end}}</dd>
-    <dt>Sandbox</dt><dd><span class="badge sandbox-{{$w.Facts.SandboxLevel}}">{{$w.Facts.SandboxLevel}}</span></dd>
-    <dt>Kinds</dt><dd>{{range $i, $k := $w.Facts.Kinds}}{{if $i}}, {{end}}{{$k}}{{else}}<span class="muted">none</span>{{end}}</dd>
-    <dt>Models</dt><dd>{{with $w.Facts.Models}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>
-    <dt>Slots</dt><dd>{{$w.Facts.Slots}}{{with $w.Gauges}} · {{.SlotsBusy}} busy · load {{num .Load1}}{{if .ChildRSSBytes}} · children {{bytes .ChildRSSBytes}} RSS{{end}}{{end}}</dd>
+    {{template "dt" (col "workerfact.sandbox")}}<dd><span class="badge sandbox-{{$w.Facts.SandboxLevel}}">{{$w.Facts.SandboxLevel}}</span></dd>
+    {{template "dt" (col "workerfact.kinds")}}<dd>{{range $i, $k := $w.Facts.Kinds}}{{if $i}}, {{end}}{{$k}}{{else}}<span class="muted">none</span>{{end}}</dd>
+    {{template "dt" (col "workerfact.models")}}<dd>{{with $w.Facts.Models}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>
+    {{template "dt" (col "workerfact.slots")}}<dd>{{$w.Facts.Slots}}{{with $w.Gauges}} · {{.SlotsBusy}} busy · load {{num .Load1}}{{if .ChildRSSBytes}} · children {{bytes .ChildRSSBytes}} RSS{{end}}{{end}}</dd>
     {{with $w.Gauges}}{{if or .HostLoad .DeferredForLoad}}
-    <dt>Host CPU</dt><dd class="host-load">{{pctp .HostLoad}} used by other work{{if .DeferredForLoad}} · busy host, not taking work{{end}}</dd>
+    {{template "dt" (col "workerfact.hostcpu")}}<dd class="host-load">{{pctp .HostLoad}} used by other work{{if .DeferredForLoad}} · busy host, not taking work{{end}}</dd>
     {{end}}{{end}}
     {{with $w.Gauges}}{{if or .ModelsBytes .WorkBytes .StateFreeBytes}}
-    <dt>Disk</dt><dd class="disk">models {{bytesp .ModelsBytes}} · work {{bytesp .WorkBytes}} · {{bytesp .StateFreeBytes}} free</dd>
-    {{with .CachedModels}}<dt>Cached models</dt><dd>{{range $i, $m := .}}{{if $i}}, {{end}}{{$m.Name}} ({{bytes $m.Bytes}}){{end}}</dd>{{end}}
+    {{template "dt" (col "workerfact.disk")}}<dd class="disk">models {{bytesp .ModelsBytes}} · work {{bytesp .WorkBytes}} · {{bytesp .StateFreeBytes}} free</dd>
+    {{with .CachedModels}}{{template "dt" (col "workerfact.cached")}}<dd>{{range $i, $m := .}}{{if $i}}, {{end}}{{$m.Name}} ({{bytes $m.Bytes}}){{end}}</dd>{{end}}
     {{end}}{{end}}
-    <dt>Last seen</dt><dd>{{ago $w.LastSeenAt}}{{with $w.LastSeenAt}} <span class="muted small">({{when .}})</span>{{end}}</dd>
-    <dt>Registered</dt><dd>{{when $w.RegisteredAt}}</dd>
-    {{with $w.DecidedBy}}<dt>Decided by</dt><dd>{{.}}{{with $w.DecidedAt}} <span class="muted small">({{when .}})</span>{{end}}</dd>{{end}}
+    {{template "dt" (col "workerfact.seen")}}<dd>{{ago $w.LastSeenAt}}{{with $w.LastSeenAt}} <span class="muted small">({{when .}})</span>{{end}}</dd>
+    {{template "dt" (col "workerfact.reg")}}<dd>{{when $w.RegisteredAt}}</dd>
+    {{with $w.DecidedBy}}{{template "dt" (col "workerfact.decided")}}<dd>{{.}}{{with $w.DecidedAt}} <span class="muted small">({{when .}})</span>{{end}}</dd>{{end}}
   </dl>
 </section>
 
@@ -104,7 +104,7 @@
 <section class="card">
   <h2>Current leases</h2>
   <p>
-    {{range .Leases}}<span class="chip"><a href="/ui/jobs/{{.JobID}}" title="{{.JobID}}"><code>{{short .JobID}}</code></a> #{{.Seq}} {{.Kind}} · {{dur .Age}}</span>
+    {{range .Leases}}<span class="chip">{{template "ref" .Job}} #{{.Seq}} {{.Kind}} · {{dur .Age}}</span>
     {{else}}{{if not .OtherLeases}}<span class="muted">none</span>{{end}}{{end}}
     {{with .OtherLeases}}<span class="muted">{{.}} on jobs you cannot view</span>{{end}}
   </p>
@@ -119,14 +119,14 @@
   <h2>Statistics</h2>
   {{with .Stats}}
   <dl class="facts worker-stats">
-    <dt>Tasks done</dt><dd>{{.TasksDone}} ({{.PrepareTasks}} prepare, {{.TranscribeTasks}} transcribe) in {{.Jobs}} jobs</dd>
-    <dt>Audio</dt><dd>{{hours .AudioHours}} h</dd>
-    <dt>Compute</dt><dd>{{dur .ComputeTime}}</dd>
-    <dt>Realtime factor</dt><dd>{{if .RTF}}{{num .RTF}}× realtime{{else}}<span class="muted">none yet</span>{{end}}</dd>
-    <dt>Failures</dt><dd>{{.Failures}} failed, {{.ExpiredLeases}} expired{{if or .TasksDone .Failures .ExpiredLeases}} · {{pct .FailurePct}} failure rate{{end}}</dd>
-    {{if $.FailureStreak}}<dt>Failure streak</dt><dd><span class="streak">failure streak {{$.FailureStreak}} in {{$.StreakJobs}} job{{if ne $.StreakJobs 1}}s{{end}}</span></dd>{{end}}
-    <dt>First task</dt><dd>{{if .FirstTaskAt}}{{whenp .FirstTaskAt}}{{else}}<span class="muted">never</span>{{end}}</dd>
-    <dt>Last task</dt><dd>{{if .LastTaskAt}}{{whenp .LastTaskAt}} <span class="muted small">({{ago .LastTaskAt}})</span>{{else}}<span class="muted">never</span>{{end}}</dd>
+    {{template "dt" (col "workerstat.done")}}<dd>{{.TasksDone}} ({{.PrepareTasks}} prepare, {{.TranscribeTasks}} transcribe) in {{.Jobs}} jobs</dd>
+    {{template "dt" (col "workerstat.audio")}}<dd>{{hours .AudioHours}} h</dd>
+    {{template "dt" (col "workerstat.compute")}}<dd>{{dur .ComputeTime}}</dd>
+    {{template "dt" (col "workerstat.rtf")}}<dd>{{if .RTF}}{{num .RTF}}× realtime{{else}}<span class="muted">none yet</span>{{end}}</dd>
+    {{template "dt" (col "workerstat.failures")}}<dd>{{.Failures}} failed, {{.ExpiredLeases}} expired{{if or .TasksDone .Failures .ExpiredLeases}} · {{pct .FailurePct}} failure rate{{end}}</dd>
+    {{if $.FailureStreak}}{{template "dt" (col "workerstat.streak")}}<dd><span class="streak">failure streak {{$.FailureStreak}} in {{$.StreakJobs}} job{{if ne $.StreakJobs 1}}s{{end}}</span></dd>{{end}}
+    {{template "dt" (col "workerstat.first")}}<dd>{{if .FirstTaskAt}}{{whenp .FirstTaskAt}}{{else}}<span class="muted">never</span>{{end}}</dd>
+    {{template "dt" (col "workerstat.last")}}<dd>{{if .LastTaskAt}}{{whenp .LastTaskAt}} <span class="muted small">({{ago .LastTaskAt}})</span>{{else}}<span class="muted">never</span>{{end}}</dd>
   </dl>
   {{end}}
 </section>

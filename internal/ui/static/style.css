@@ -169,3 +169,24 @@ table.grant-matrix th .help { font-weight: 400; white-space: normal; max-width: 
 table.grant-matrix tbody th { font-weight: 600; color: var(--fg); font-size: 1em; }
 table.grant-matrix input[type=checkbox] { width: 1.1rem; height: 1.1rem; }
 .saved { color: var(--ok, inherit); font-weight: 600; }
+
+/* Column, field and tile help (DESIGN.md §6.3): the ⓘ button in a header,
+   <dt> or tile caption toggles a popover with its help text (ui.js). */
+table.data thead th, dl dt, .tile-label { position: relative; }
+button.colhelp {
+  background: none; border: none; color: var(--muted); padding: 0 0.15rem; margin-left: 0.15rem;
+  font-size: 0.9em; line-height: 1; cursor: help;
+}
+button.colhelp[aria-expanded="true"] { color: var(--accent); }
+.colhelp-text {
+  position: absolute; z-index: 10; top: 100%; left: 0; min-width: 12rem; max-width: 22rem;
+  background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.4rem 0.55rem; font-weight: 400; white-space: normal; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+table.data th.n .colhelp-text { left: auto; right: 0; }
+
+/* Pending detail (DESIGN.md §6.3). */
+ul.reasons { margin: 0; padding-left: 1.1rem; }
+.warn { color: var(--warn); }
+p.warn { font-weight: 600; }
+.ref .muted { font-size: 0.9em; }

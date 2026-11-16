@@ -12,16 +12,16 @@
 <section class="card">
   <div class="scroll">
   <table class="data">
-    <thead><tr><th>Name</th><th>ID</th><th>Roles</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <thead><tr>{{template "th" (col "clients.name")}}{{template "th" (col "clients.id")}}{{template "th" (col "clients.roles")}}{{template "th" (col "clients.created")}}{{template "th" (col "clients.used")}}{{template "th" (col "clients.actions")}}</tr></thead>
     <tbody>
     {{range .Data.Clients}}
     <tr>
-      <td>{{.Name}}</td>
+      <td><a href="/ui/clients/{{.ID}}">{{.Name}}</a></td>
       <td><code>{{.ID}}</code></td>
       <td>{{range .Grants}}<div class="chip">{{.Role}} {{.Scope}}</div>{{else}}<span class="muted">none</span>{{end}}</td>
       <td>{{when .CreatedAt}}</td>
       <td>{{ago .LastUsedAt}}</td>
-      <td>{{if .RevokedAt}}<span class="badge state-rejected">revoked</span>{{else}}
+      <td>{{if .RevokedAt}}<span class="badge state-rejected" title="{{vhelp "badge" "revoked"}}">revoked</span>{{else}}
         <a href="/ui/clients/{{.ID}}" class="button">Edit</a>
         {{if .CanRevoke}}<form method="post" action="/ui/clients/{{.ID}}/revoke" class="inline" hx-post="/ui/clients/{{.ID}}/revoke" hx-confirm="Revoke this client's token? Programs using it stop working.">
           {{template "csrf" $.CSRF}}

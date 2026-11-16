@@ -272,6 +272,16 @@ unrecognised string) marked "differs". Dev builds compare by base version,
 then commits since the tag. The dashboard's Fleet versions tile counts workers
 per version and flags a fleet running mixed whisper.cpp versions.
 
+**Reading the UI.** Workers, jobs and API clients appear by name (a job by its
+label) with a short id after it, each linked to its page; every table column,
+details field (a worker's facts and statistics, a job's, queue's or
+client's details) and dashboard tile has an ⓘ explaining it. The dashboard's Capacity tile shows task slots in use
+and available across the fleet, and per queue. A queue's page summarizes its
+pending tasks and says why they are waiting (no eligible worker, no worker
+with the model, prepare needing a full sandbox, the only able worker already
+failed it, all slots busy); the job page lists every waiting task with its
+wait, attempts and last failure.
+
 **Sandbox levels.** Every ffmpeg and whisper-cli child runs under
 `whisper-network sandbox-exec`, which applies lowest CPU and I/O priority,
 `no_new_privs`, resource limits and Landlock filesystem rules, and (kernel 6.7
@@ -500,6 +510,7 @@ label. A worker can additionally expose `--metrics-listen` or push with
 
 Key series: `whisper_jobs`, `whisper_tasks`, `whisper_queue_backlog_cost`,
 `whisper_queue_oldest_pending_seconds`, `whisper_queue_eligible_workers`,
+`whisper_fleet_slots{state,kind}` (slots in use, available, deferred, paused),
 `whisper_sched_served_cost_total`, `whisper_leases_ended_total`,
 `whisper_workers`, `whisper_worker_last_seen_timestamp_seconds`,
 `whisper_worker_info` (labels include `version`, `engine_version`),
