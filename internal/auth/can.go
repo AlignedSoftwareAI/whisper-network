@@ -33,6 +33,8 @@ func Can(p Principal, a Action, r Resource) bool {
 	case ActDeleteJob:
 		return admin || isOwner(p, r) ||
 			p.onQueue(api.RoleDeleteAll, r.Queue) || p.onQueue(api.RoleQueueAdmin, r.Queue)
+	case ActRetryJob:
+		return admin || isOwner(p, r) || p.onQueue(api.RoleQueueAdmin, r.Queue)
 	case ActPatchQueueDescription, ActPatchQueueMaxUpload,
 		ActGrantProcess, ActGrantQueueRole:
 		return admin || p.onQueue(api.RoleQueueAdmin, r.Queue)

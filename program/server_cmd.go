@@ -53,7 +53,9 @@ type ServerCmd struct {
 	PrepareMinSandbox string        `default:"full" enum:"full,fs-only,none" env:"WHISPER_PREPARE_MIN_SANDBOX" help:"Least sandbox level that may run prepare tasks"`
 	MaxUploadBytes    string        `default:"2GiB" env:"WHISPER_MAX_UPLOAD_BYTES" help:"Default upload size cap (queues may override)"`
 	MinFreeBytes      string        `default:"1GiB" env:"WHISPER_MIN_FREE_BYTES" help:"Refuse uploads below this much free disk"`
-	AudioRetention    time.Duration `default:"24h" env:"WHISPER_AUDIO_RETENTION" help:"Keep canonical audio this long after a job ends"`
+	AudioRetention    time.Duration `default:"24h" env:"WHISPER_AUDIO_RETENTION" help:"Keep canonical audio this long after a job is done"`
+	FailedRetention   time.Duration `default:"24h" env:"WHISPER_FAILED_RETENTION" help:"Keep a failed job's media at least this long after it failed, so it can be retried"`
+	FailedMaxDisk     string        `name:"failed-retention-max-disk" default:"80%" env:"WHISPER_FAILED_RETENTION_MAX_DISK" help:"When the data disk is fuller than this (a percentage, or a size such as 200GiB), purge the oldest failed jobs' media first"`
 	JobRetention      time.Duration `default:"720h" env:"WHISPER_JOB_RETENTION" help:"Keep finished jobs and transcripts this long"`
 	PendingWorkerTTL  time.Duration `default:"168h" env:"WHISPER_PENDING_WORKER_TTL" help:"Delete workers still pending this long after registering"`
 	RejectedRetention time.Duration `name:"rejected-worker-retention" default:"720h" env:"WHISPER_REJECTED_WORKER_RETENTION" help:"Delete rejected workers this long after rejection"`
@@ -163,6 +165,10 @@ func (c *ServerCmd) serverConfig() (server.Config, error) {
 	if err != nil || pwMem <= 0 {
 		return server.Config{}, fmt.Errorf("--password-memory-budget: must be a positive size")
 	}
+	failedMax, err := server.ParseDiskCeiling(c.FailedMaxDisk)
+	if err != nil {
+		return server.Config{}, fmt.Errorf("--failed-retention-max-disk: %w", err)
+	}
 	cfg := server.DefaultConfig()
 	cfg.DataDir = c.Data
 	cfg.PublicURL = c.PublicURL
@@ -173,6 +179,8 @@ func (c *ServerCmd) serverConfig() (server.Config, error) {
 	cfg.MaxUploadBytes = maxUpload
 	cfg.MinFreeBytes = minFree
 	cfg.AudioRetention = c.AudioRetention
+	cfg.FailedRetention = c.FailedRetention
+	cfg.FailedMaxDisk = failedMax
 	cfg.JobRetention = c.JobRetention
 	cfg.RetryWaitLimit = c.RetryWaitLimit
 	cfg.PendingWorkerTTL = c.PendingWorkerTTL

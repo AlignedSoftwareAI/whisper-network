@@ -122,7 +122,7 @@ func fixtureSnapshot() Snapshot {
 			HostLoad: ptr(72.5), ClaimsDeferred: ptr(int64(12)),
 		}},
 		Storage:       StorageBytes{Original: 10, Canonical: 20, Transcript: 30},
-		DataFreeBytes: 999,
+		DataFreeBytes: 999, RetryableFailedJobs: 4,
 	}
 }
 
@@ -155,6 +155,7 @@ func TestSnapshotGauges(t *testing.T) {
 		`whisper_storage_bytes{kind="original"} 10`,
 		`whisper_storage_bytes{kind="transcript"} 30`,
 		`whisper_data_free_bytes 999`,
+		`whisper_failed_jobs_retryable 4`,
 	} {
 		assert.Contains(t, out, want)
 	}

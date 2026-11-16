@@ -782,29 +782,32 @@ func TestCanonicalRetentionBoundary(t *testing.T) {
 	l := h.claim(wid, wtok, "", nil)
 	resp, b := h.putResult(l, wtok, result(l, "x"))
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(b))
-	assertRetentionBoundary(t, h, job.ID)
+	assertRetentionBoundary(t, h, job.ID, h.srv.cfg.AudioRetention)
 }
 
 // TestFailedJobAudioRetention: a failed job's canonical audio follows the
-// same retention from when it failed.
+// failed-job retention from when it failed, not the audio retention (#56).
 func TestFailedJobAudioRetention(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	h := newHarness(t, func(c *Config, _ *store.Config) {
+		c.AudioRetention = time.Hour
+		c.FailedRetention = 48 * time.Hour
+	})
 	client := h.client(submitOn("public"))
 	wid, wtok := h.activeWorker(api.WorkerFacts{}, "public")
 	job := h.submit(client, "public", api.JobParams{Model: "small.en"}, canonicalWAV(speech(2, media.SampleRate)))
 	l := h.claim(wid, wtok, "", nil)
 	h.expect("POST", "/lease/"+l.ID+"/failure", wtok, api.FailureReport{Reason: "boom"}, http.StatusNoContent, nil)
 	require.Equal(t, api.JobFailed, h.job(job.ID).State)
-	assertRetentionBoundary(t, h, job.ID)
+	assertRetentionBoundary(t, h, job.ID, h.srv.cfg.FailedRetention)
 }
 
-func assertRetentionBoundary(t *testing.T, h *harness, jobID string) {
+func assertRetentionBoundary(t *testing.T, h *harness, jobID string, retention time.Duration) {
 	t.Helper()
 	j := h.job(jobID)
 	require.NotNil(t, j.CompletedAt)
 	require.False(t, j.Media.AudioPurged)
-	purgeAt := j.CompletedAt.Add(h.srv.cfg.AudioRetention)
+	purgeAt := j.CompletedAt.Add(retention)
 	h.clk.Advance(purgeAt.Sub(h.clk.Now()) - time.Millisecond)
 	h.srv.reapOnce(h.ctx)
 	assert.False(t, h.job(jobID).Media.AudioPurged, "kept 1 ms before retention ends")

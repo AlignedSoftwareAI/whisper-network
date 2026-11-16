@@ -13,6 +13,7 @@ const (
 	EventJobFailed        Event = "job.failed"
 	EventJobDeleted       Event = "job.deleted"
 	EventJobPurged        Event = "job.purged"
+	EventJobRetried       Event = "job.retried"
 	EventTaskLeased       Event = "task.leased"
 	EventLeaseExpired     Event = "lease.expired"
 	EventLeaseReleased    Event = "lease.released"

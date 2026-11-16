@@ -26,6 +26,9 @@ type Snapshot struct {
 	Storage    StorageBytes
 	// DataFreeBytes is the free space on the data directory's filesystem.
 	DataFreeBytes int64
+	// RetryableFailedJobs counts failed jobs whose media is still kept, so
+	// they can be retried.
+	RetryableFailedJobs int
 }
 
 // JobCount is the number of jobs in one queue and state.
@@ -92,9 +95,10 @@ type WorkerStat struct {
 	ClaimsDeferred *int64
 }
 
-// StorageBytes is the stored size per blob kind.
+// StorageBytes is the stored size per blob kind. Failed is the part of
+// Original and Canonical held for failed jobs (failed-job retention).
 type StorageBytes struct {
-	Original, Canonical, Transcript int64
+	Original, Canonical, Transcript, Failed int64
 }
 
 // SetSnapshot replaces the snapshot rendered by gauges. It is safe to call
@@ -156,7 +160,9 @@ func (m *Metrics) writeSnapshot(w io.Writer) {
 	g("whisper_storage_bytes", float64(s.Storage.Original), "kind", "original")
 	g("whisper_storage_bytes", float64(s.Storage.Canonical), "kind", "canonical")
 	g("whisper_storage_bytes", float64(s.Storage.Transcript), "kind", "transcript")
+	g("whisper_storage_bytes", float64(s.Storage.Failed), "kind", "failed")
 	g("whisper_data_free_bytes", float64(s.DataFreeBytes))
+	g("whisper_failed_jobs_retryable", float64(s.RetryableFailedJobs))
 }
 
 func (m *Metrics) writeWorkers(w io.Writer, in []WorkerStat) {

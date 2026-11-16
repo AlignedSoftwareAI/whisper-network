@@ -153,6 +153,7 @@ The breaker complements **retry elsewhere** (below): retry elsewhere moves a fai
  preparing ──▶ queued ──▶ running ──▶ done
      │            │          │
      └────────────┴──────────┴──▶ failed     (a task failed for good, and no lease of the job is live any more)
+ failed ──retry──▶ preparing (prepare never succeeded) | queued     (its retained media still present)
  any state ──DELETE──▶ (row and blobs removed; active leases cancelled)
 ```
 
@@ -165,6 +166,16 @@ The breaker complements **retry elsewhere** (below): retry elsewhere moves a fai
 - A failed job's `error` ends with its progress, `…; 2 of 12 tasks done, 4 cancelled` (transcribe tasks; omitted for a job that failed preparing), and `tasks` counts `done`, `failed` and `cancelled` accurately, so a client can tell what a retry (#56) would save. The `done` tasks' results stay in the database until job retention.
 
 `FailJob` (used when assembly fails) still fails a job outright, cancelling its leases.
+
+**Retrying a failed job** (`POST /job/{id}/retry`, the job page's **Retry** button, `whisper-network retry <job-id>`; #56, #62). A failure on the server's or the fleet's side must never require the submitter to upload again: a retry works from the media the server kept, the canonical audio, or the original if prepare never succeeded (failed-job retention, §8.5). Allowed for the job's owner, `queue_admin` on its queue, and `admin` (`auth.ActRetryJob`); one action serves both the owner's "resume" and the operator's "requeue". In one transaction:
+
+- Only a `failed` job whose needed media is still on disk qualifies; anything else is `409` with problem type `not-retryable` and the reason (not failed; media purged), and nothing changes. The job document's `retryable` says which beforehand.
+- `done` tasks and their results are kept. `failed` and `cancelled` tasks go back to `pending` with `attempts = 0` and no worker.
+- The retry-elsewhere exclusions are cleared (the operator is asserting the cause is fixed) without deleting history: `jobs.retries` counts the job's retries and each lease records the count at claim time (`leases.retry`). Attempt counting, the claim's exclusion and the stranded-task rule consider only leases of the current retry, so the ended leases stay for debugging.
+- `error`, `completed_at` and `compute_ms` are cleared; the job becomes `preparing` (no canonical audio yet) or `queued`, and `retries` goes up. The scheduler's reactivation rule is applied and waiting claims are woken.
+- Audited as `job.retry` with the previous error; logged as `job.retried`.
+
+The retry and the reaper's media purge both run under the job lock, and the reaper purges only a job it re-reads as `done` or `failed`, so a purge can never remove the media of a job that a retry has just made live.
 
 `preparing` is skipped when the upload is already canonical. Transcribe tasks are created when the canonical audio is accepted.
 
@@ -249,8 +260,12 @@ CREATE TABLE jobs (
   compute_ms INTEGER, error TEXT,
   first_downloaded_at INTEGER, last_downloaded_at INTEGER,
   download_count INTEGER NOT NULL DEFAULT 0,
+  retries INTEGER NOT NULL DEFAULT 0,        -- times the failed job was retried (§4.2)
   UNIQUE (client_id, idempotency_key));
 CREATE INDEX jobs_queue_state ON jobs (queue_id, state, created_at);
+CREATE INDEX jobs_queue_state_order ON jobs (queue_id,       -- ?sort=state (§6.1)
+  (CASE state WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'preparing' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END),
+  (CASE WHEN state IN ('failed','done') THEN -COALESCE(completed_at, created_at) ELSE created_at END), id);
 
 CREATE TABLE tasks (
   job_id TEXT NOT NULL REFERENCES jobs ON DELETE CASCADE, seq INTEGER NOT NULL,
@@ -269,6 +284,7 @@ CREATE TABLE leases (
   ended_at INTEGER, outcome TEXT,             -- done | expired | released | failed | cancelled
   heartbeat_at INTEGER,                       -- latest heartbeat, NULL until the first (UI only)
   stage TEXT,                                 -- failed only: pre-work | input | child, as reported (§4.2)
+  retry INTEGER NOT NULL DEFAULT 0,           -- the job's retries when claimed; only the current retry's failures count (§4.2)
   FOREIGN KEY (job_id, seq) REFERENCES tasks ON DELETE CASCADE);
 CREATE INDEX leases_live ON leases (expires_at) WHERE ended_at IS NULL;
 CREATE INDEX leases_task_failures ON leases (job_id, seq, worker_id, ended_at)  -- retry elsewhere (§8.2)
@@ -378,6 +394,8 @@ Every change to authorization or to stored state that a person, client or worker
 | `job.create` | A job is created by upload (a replayed idempotency key is not a new entry) | the submitting principal |
 | `job.delete` | A job is deleted by its owner, by a principal with `delete_all`/`admin`, or by retention | the deleting principal, or `system` |
 | `job.purge_media` | An original upload or canonical audio is deleted (§8.5) | `system` |
+| `job.retry` | A failed job is retried (§4.2); the detail carries the `previous_error` | the retrying principal |
+| `job.bulk_retry` / `job.bulk_delete` | A bulk action ran (§6.1), one summary entry on the queue with the outcome counts and the filter; each changed job also has its own `job.retry` / `job.delete` | the acting principal |
 
 Audit details never contain secrets or requester content: no passwords, tokens, prompts or metadata.
 
@@ -402,12 +420,14 @@ All bodies are JSON unless noted. Errors use RFC 9457 `application/problem+json`
 | Method & path | Purpose | Auth |
 |---|---|---|
 | `POST /queue/{q}` | Create a job. Multipart body: part `params` (JSON) and part `media` (any audio or video). Optional `Idempotency-Key` header. Returns `201` with `Location: /job/{id}` and the job JSON. | `submit` on q |
-| `GET /queue/{q}` | List visible jobs. Query: `state`, `since` (created or updated after), `limit`, `cursor`. | `submit`, `view_all` or `read_all` on q |
+| `GET /queue/{q}` | List visible jobs. Query: `state`, `since` (created or updated after), `limit`, `cursor`, `sort`, `order` (below). | `submit`, `view_all` or `read_all` on q |
+| `POST /queue/{q}/bulk` | Retry or delete many jobs of q (below). | per job, as the single-job action |
 | `PATCH /queue/{q}` | Change `weight`, `description` or `max_upload_bytes`. | `admin` (weight); `queue_admin` (the others) |
 | `GET /job/{id}` | Job status (below), including `prompt`, `metadata` and `submitted_by`. | owner, or `view_all`, `read_all` or `queue_admin` on its queue |
-| `GET /job/{id}/transcript` | `text/plain` transcript with the provenance header. Records a download. `409` if not done. | owner, or `read_all` on its queue |
+| `GET /job/{id}/transcript` | `text/plain` transcript with the provenance header. Records a download. `409` if not done, unless `?partial=1` (§8.4). | owner, or `read_all` on its queue |
 | `GET /job/{id}/result` | JSON segments with absolute times, for consumers that want structure. Also records a download. | same |
 | `DELETE /job/{id}` | Delete the job, its blobs and live leases. `204`. | owner, `delete_all`, or `queue_admin` |
+| `POST /job/{id}/retry` | Retry a failed job (§4.2). `200` with the job document; `409 not-retryable` if not failed or its media was purged. | owner, `queue_admin`, or `admin` |
 | `POST /client` | Create a client with a set of grants (a subset of the caller's). Returns the token once. | `client_admin` |
 | `GET /client/{id}`, `DELETE /client/{id}` | Inspect or revoke. | `client_admin` or self (GET) |
 
@@ -444,6 +464,12 @@ Model choice stays with the client. The rule "`en` → `small.en`, anything else
 ```
 
 The document is the same for everyone who may see the job (§5.2), including `prompt`, `metadata` and `submitted_by` (`{kind: "client"|"user", id, name}`); only the transcript and result need `read_all`.
+
+The document also carries `retries` (how many times the job was retried), `retryable` (a failed job whose retained media is present) and, for a failed job with its media, `media.kept_until` (when failed-job retention lets the reaper purge it; a full disk can purge it sooner, §8.5). `media.audio_purged` is true once the audio a retry would need is gone: the canonical audio, or for a job that never got canonical audio, its original.
+
+**List order** (#67). `GET /queue/{q}` lists oldest first by default, unchanged for existing clients and cursors. `sort=created&order=desc` lists newest first (`order=asc` is the default). `sort=state` lists running jobs, then `queued` and `preparing`, both oldest first (the scheduling order), then `failed`, then `done`, both most recently finished first; `order` does not apply to it. Paging is by keyset: a cursor encodes its order's key (`created_at, id`, or the state group, the time within the group and `id`), the page is chosen on the jobs table alone, and the state order is served by the expression index `jobs_queue_state_order` (no sort step, checked by a test of the query plan). A cursor of one order is rejected (`400`) by another. Under `sort=state` a job that changes state between two pages moves to its new group, so it can be listed twice (it moved to a later group) or not at all (it moved to an earlier one); jobs that keep their state are never skipped or repeated. The UI's queue page defaults to `sort=state`, has an order control, and remembers the choice per browser in a cookie.
+
+**Bulk retry and delete** (#68). `POST /queue/{q}/bulk` with `{"action": "retry"|"delete", "job_ids": [...]}` or `{"action": …, "filter": {"state": "failed", "since": "<RFC 3339>", "cursor": "…"}}`, plus optional `"dry_run": true`. A filter selects as `GET /queue/{q}` would, oldest first, among the jobs the caller can see; `state` is required. At most 500 jobs per request: `job_ids` beyond that is `400`, and a larger filter selection returns `next_cursor` to continue. Each job is authorized as its single-job action (retry: owner, `queue_admin`, `admin`; delete: owner, `delete_all`, `queue_admin`, `admin`), so a bulk request never widens what the caller could do one job at a time; each runs in its own transaction, so one job's failure does not undo the others. The response lists every job's outcome, `retried`, `deleted`, `skipped` with a `reason` (`media purged`, `not failed`), `forbidden` (visible but not allowed), or `not_found` (unknown, on another queue, or not visible: as for single jobs, existence is not revealed), plus `counts` by outcome; a dry run reports `would_retry` / `would_delete` and changes nothing. Each changed job gets its own `job.retry` / `job.delete` audit entry and the request one `job.bulk_retry` / `job.bulk_delete` summary entry on the queue (none for a dry run). Retried jobs re-enter the fair scheduler like any other queued job. The UI's queue page has a checkbox per row, "select all on this page", and, with a state filter set, "all N matching"; it asks for confirmation with the count and then shows the per-job outcomes and a summary such as `3 retried, 1 skipped: media purged`. The CLI is `whisper-network retry --queue Q [--since T] [--dry-run]` and `whisper-network delete --queue Q --state S [--dry-run]`.
 
 "How long it took" is reported three ways: `wait_s` (created → first lease), `elapsed_s` (first lease → completed), and `compute_s` (sum of task compute time, including prepare). With parallel tasks, compute can exceed elapsed.
 
@@ -509,8 +535,8 @@ The server validates the result: segment times must be monotonic, within the tas
 
 - **Dashboard**: queue depths, running tasks, workers online, throughput (audio-hours per hour), and each queue's **actual vs configured share** (§8.2).
 - **Workers**: a table, pending first and filterable by state: name, state, queues, sandbox level, busy/total slots, last seen, the work counters' summary (§4.3: tasks done, audio hours, average realtime factor, failure rate; the breakdown on hover), and pause/resume in the row. Each worker has its own page with the facts list (including sandbox level, disk use — model cache, work directories, free space under `--state` — and cached models), approve (queue picker), pause, resume and reject, per-queue `process` grants, its full work counters, and current leases (job, task and lease age). A worker the viewer may not see is a 404.
-- **Queues**: create, edit (weight is admin-only) and list jobs; per-queue grants. The job list's Workers column names the workers holding a running job's live leases, or for a done or failed job the workers that completed its tasks, each linking to the worker's page (subject to §5.3).
-- **Jobs**: filters, detail view (finished tasks, and each running task's worker, lease age, last heartbeat and attempt), delete, transcript download.
+- **Queues**: create, edit (weight is admin-only) and list jobs; per-queue grants. The job list's Workers column names the workers holding a running job's live leases, or for a done or failed job the workers that completed its tasks, each linking to the worker's page (subject to §5.3). The job list is ordered by state by default, with an order control (state, newest, oldest) remembered per browser in a cookie (§6.1, list order), and has per-row checkboxes for bulk retry and delete (§6.1, bulk): "select all on this page" is a small script (`/ui/static/queue.js`, no inline code under the CSP), and with a state filter set "all N matching" acts on the whole filter. A bulk action always asks for confirmation with the count, then shows each job's outcome and a summary.
+- **Jobs**: filters, detail view (finished tasks, and each running task's worker, lease age, last heartbeat and attempt), delete, transcript download; for a failed job, **Retry** (§4.2) while its media is kept and "files kept until …"; for a job that is not done, the partial transcript (§8.4) to those who may read it.
 - **Users and clients**: create, disable, grant roles, mint tokens (shown once).
 - **Audit log**: every approval, grant, weight change, deletion and token mint.
 
@@ -742,12 +768,16 @@ Transcript format: `[mm:ss.ss] text` lines, the same shape as YouTube caption tr
 
 If the tasks ran on different whisper.cpp versions, the header lists all of them (`whisper.cpp=1.9.5,1.9.6`). See §13.
 
+**Partial transcripts** (#66). A failed or unfinished job may have most of its tasks done. `GET /job/{id}/transcript?partial=1` and `/result?partial=1` assemble what exists, on request and without storing it (it changes as tasks finish, and a retried job may still complete): the done tasks' segments as above, and for every transcribe task that is not done a gap marked inline in the text, before the first segment at or after it, e.g. `[... missing 1:03:12-1:58:40 (task 6) ...]` (`H:MM:SS` of the task's audio). The provenance header ends with `; partial=true; missing=K/N` (K of the job's N transcribe tasks missing; `tasks=` counts the done ones); the JSON has `"partial": true` and `"missing": [{"task", "start_ms", "end_ms"}]`, and only real segments in `segments`. Without the flag nothing changes (`409 not-done` until done), so partial output is never mistaken for complete; a done job's `?partial=1` is its full transcript. A job with no transcribe task yet (preparing, or failed while preparing) has nothing to serve and stays `409`. Permissions are those of the full transcript (owner, `read_all`, `admin`), and a partial download is recorded like any other.
+
 ### 8.5 Retention (reaper)
 
 | What | When | Config |
 |---|---|---|
-| Original media | as soon as canonical audio is accepted, or `audio_retention` after a failed prepare | — |
-| Canonical audio | `completed_at + audio_retention` (default 24 h), or `audio_retention` after job failure | `WHISPER_AUDIO_RETENTION` |
+| Original media | as soon as canonical audio is accepted; for a job that failed preparing, as for a failed job's media (next rows) | — |
+| Canonical audio | `completed_at + audio_retention` (default 24 h) | `WHISPER_AUDIO_RETENTION` |
+| Failed job's media (the original if prepare never succeeded, else the canonical audio): kept so the job can be retried (§4.2) | at least `completed_at + failed_retention` (default 24 h)… | `WHISPER_FAILED_RETENTION` |
+| …unless the disk fills | while the data filesystem's used space is above `failed_retention_max_disk` (default `80%`; a percentage of its size, or an absolute size such as `200GiB`), or its free space is below twice `--min-free-bytes` (the upload guard is near), the reaper purges failed jobs' media **oldest failure first** until the overage is covered. Live jobs' media and done jobs' media are never touched by this rule. Free space comes from the same injectable probe as the upload guard and `/readyz`, and the filesystem's size from its companion | `WHISPER_FAILED_RETENTION_MAX_DISK` |
 | Job, transcript and tasks | `completed_at + job_retention` (default 30 d) unless deleted earlier | `WHISPER_JOB_RETENTION` |
 | Queued jobs never processed | not purged; they stay visible on the dashboard and in `whisper_queue_oldest_pending_seconds` | — |
 | Pending workers | 7 d after registration (polling does not extend it, so a pending worker cannot hold a slot under `--max-pending-workers` indefinitely), with their grants and the grants scoped to them | `WHISPER_PENDING_WORKER_TTL` |
@@ -756,7 +786,9 @@ If the tasks ran on different whisper.cpp versions, the header lists all of them
 | Ended leases | 30 d (debugging); never while their task is still pending or leased, since they record which workers failed it (§8.2) | — |
 | Orphan `.part` files | on startup and daily | — |
 
-Once the canonical audio is purged a job can't be retried. `GET /job/{id}` reports `media.audio_purged: true`.
+Once a failed job's media is purged it can't be retried: `GET /job/{id}` reports `media.audio_purged: true` and `retryable: false`, a retry is `409 not-retryable`, and the UI no longer offers it. While the media is kept the document says until when (`media.kept_until`) and the job page shows "files kept until …". The reaper purges media only from a job it re-reads, under the job lock, as `done` or `failed`, so a job retried meanwhile keeps its media (§4.2). The gauges `whisper_storage_bytes{kind="failed"}` (media bytes held for failed jobs, a part of the `original` and `canonical` kinds) and `whisper_failed_jobs_retryable` (§10.2) show what the policy holds.
+
+Not implemented: a separate retention for a failed prepare's original beyond the rule above, and a "failed, retryable" filter on the queue page (the job document's `retryable` serves API clients).
 
 Every purge, deletion and prune the reaper makes is audited with actor `system` (§5.2.1).
 
@@ -824,6 +856,7 @@ Every line also carries `service="whisper-network"`, `mode` (`server`/`worker`),
 | `job.prepared` | info | server | `job_id`, `audio_s`, `tasks`, `canonical_bytes` |
 | `job.done` / `job.failed` | info / warn | server | `job_id`, `queue`, `wait_s`, `elapsed_s`, `compute_s`, `error` |
 | `job.deleted` / `job.purged` | info | server | `job_id`, `actor` / `what` |
+| `job.retried` | info | server | `job_id`, `actor`, `state`, `tasks`, `retries`, `previous_error` |
 | `task.leased` | info | server | `job_id`, `task_seq`, `task_kind`, `lease_id`, `worker_id`, `queue`, `cost`, `vtime` |
 | `lease.expired` / `lease.released` | warn / info | server | `lease_id`, `worker_id`, `attempt` |
 | `task.done` / `task.failed` | info / warn | server + worker | `lease_id`, `compute_ms`, `audio_s`, `rtf`, `error`, `stderr_tail` (≤ 4 KiB); a task the reaper fails at the retry wait limit (§8.2) has no lease and carries `failed_on` (the workers) |
@@ -897,7 +930,8 @@ It was chosen over `prometheus/client_golang` because push is native, and it is 
 | `whisper_http_requests_total` | counter | `route`, `method`, `code` | |
 | `whisper_http_request_duration_seconds` | histogram | `route` | |
 | `whisper_upload_bytes_total` / `whisper_input_served_bytes_total` | counter | `queue` / `kind` | Bandwidth |
-| `whisper_storage_bytes` | gauge | `kind` (`original`, `canonical`, `transcript`) | |
+| `whisper_storage_bytes` | gauge | `kind` (`original`, `canonical`, `transcript`, `failed`: the part of the first two held for failed jobs, §8.5) | |
+| `whisper_failed_jobs_retryable` | gauge | — | Failed jobs whose media is kept, so they can be retried |
 | `whisper_data_free_bytes` | gauge | — | Disk alert |
 | `whisper_db_tx_seconds` | histogram | `op` | SQLite contention, if it ever appears |
 | `go_*`, `process_*` | — | — | From the library |
@@ -951,6 +985,7 @@ Every flag has an env var equivalent (`WHISPER_*`). There is no config file in v
 | `--max-upload-bytes` | 2 GiB | A queue may set a lower cap; a queue cap above this is refused (400), and uploads are clamped to it regardless |
 | `--min-free-bytes` | 1 GiB | Uploads that would take free disk below this are refused (507) |
 | `--audio-retention` / `--job-retention` | 24h / 720h | §8.5 |
+| `--failed-retention` / `--failed-retention-max-disk` | 24h / 80% | §8.5 |
 | `--pending-worker-ttl` | 168h | Pending workers are deleted this long after registering (§8.5) |
 | `--rejected-worker-retention` | 720h | Rejected workers are deleted this long after rejection (§8.5) |
 | `--max-pending-workers` | 100 | Cap on workers awaiting approval; registration beyond it is 503 |

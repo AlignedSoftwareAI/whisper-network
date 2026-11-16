@@ -20,11 +20,23 @@
     <dt>Completed</dt><dd>{{whenp $j.CompletedAt}}</dd>
     <dt>Timing</dt><dd>waited {{secsp $j.WaitS}} · elapsed {{secsp $j.ElapsedS}} · compute {{secs $j.ComputeS}}</dd>
     <dt>Downloads</dt><dd>{{$j.Downloads.Count}}{{with $j.Downloads.Last}} · last {{when .}}{{end}}</dd>
+    {{if eq (print $j.State) "failed"}}<dt>Files</dt><dd>{{with $j.Media.KeptUntil}}kept until {{when .}} (sooner if the disk fills){{else}}purged; the job cannot be retried{{end}}</dd>{{end}}
+    {{if $j.Retries}}<dt>Retries</dt><dd>{{$j.Retries}}</dd>{{end}}
   </dl>
   <div class="actions">
     {{if .Data.CanDownload}}
     <a class="button" href="/job/{{$j.ID}}/transcript" download>Download transcript</a>
     <a class="button secondary" href="/job/{{$j.ID}}/result" download>Download JSON</a>
+    {{end}}
+    {{if .Data.CanPartial}}
+    <a class="button secondary" href="/job/{{$j.ID}}/transcript?partial=1" download>Download partial transcript</a>
+    {{end}}
+    {{if .Data.CanRetry}}
+    <form method="post" action="/ui/jobs/{{$j.ID}}/retry" class="inline"
+          hx-post="/ui/jobs/{{$j.ID}}/retry" hx-confirm="Retry this job? Finished tasks are kept; the rest run again.">
+      {{template "csrf" .CSRF}}
+      <button type="submit">Retry job</button>
+    </form>
     {{end}}
     {{if .Data.CanDelete}}
     <form method="post" action="/ui/jobs/{{$j.ID}}/delete" class="inline"

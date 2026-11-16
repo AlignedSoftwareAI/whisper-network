@@ -180,9 +180,11 @@ whisper-network status "$id"
 whisper-network fetch "$id" -o meeting.txt
 ```
 
-`fetch` fails until the job is `done`. `status` with no job ID lists the
+`fetch` fails until the job is `done` (`fetch --partial` returns what is
+transcribed so far, gaps marked). `status` with no job ID lists the
 queue's jobs (`--state` filters). `fetch --json` returns segments with
-absolute times.
+absolute times. A failed job is retried from the server's copy of the media
+with `whisper-network retry "$id"`; nothing needs uploading again.
 
 ### Compose example
 
@@ -305,11 +307,13 @@ Client tokens (`wnc_...`) and worker tokens (`wnw_...`) go in
 | Method and path | Purpose | Caller |
 |---|---|---|
 | `POST /queue/{q}` | Create a job (multipart: `params` JSON, `media`); honours `Idempotency-Key` | client |
-| `GET /queue/{q}` | List visible jobs (`state`, `since`, `limit`, `cursor`) | client |
+| `GET /queue/{q}` | List visible jobs (`state`, `since`, `limit`, `cursor`; `sort=state`, or `sort=created&order=asc\|desc`) | client |
+| `POST /queue/{q}/bulk` | Retry or delete many jobs: `{"action":"retry"\|"delete", "job_ids":[...]}` or `"filter":{"state","since","cursor"}`, optional `"dry_run"`; at most 500 per request; per-job outcomes | client (authorized per job) |
 | `PATCH /queue/{q}` | Change weight, description, upload cap | admin / queue_admin |
 | `GET /job/{id}` | Job status | client |
-| `GET /job/{id}/transcript` | Text transcript with provenance header | client |
-| `GET /job/{id}/result` | JSON segments, absolute times | client |
+| `GET /job/{id}/transcript` | Text transcript with provenance header; `?partial=1` for a failed or unfinished job's transcript so far, gaps marked | client |
+| `GET /job/{id}/result` | JSON segments, absolute times (also `?partial=1`) | client |
+| `POST /job/{id}/retry` | Retry a failed job: done tasks kept, the rest re-run from the retained media; `409 not-retryable` once purged | owner, queue_admin, admin |
 | `DELETE /job/{id}` | Delete job and blobs | client |
 | `POST /client`, `GET /client/{id}`, `DELETE /client/{id}` | Manage client tokens | client_admin |
 | `POST /worker`, `GET/PATCH /worker/{id}` | Register; read or update own facts | worker |
@@ -364,7 +368,9 @@ for the authoritative list.
 | `--prepare-min-sandbox` | `full` | `WHISPER_PREPARE_MIN_SANDBOX` | `full`, `fs-only` or `none`: least sandbox level for prepare tasks |
 | `--max-upload-bytes` | `2GiB` | `WHISPER_MAX_UPLOAD_BYTES` | Default upload cap (per-queue override) |
 | `--min-free-bytes` | `1GiB` | `WHISPER_MIN_FREE_BYTES` | Refuse uploads below this much free disk |
-| `--audio-retention` | `24h` | `WHISPER_AUDIO_RETENTION` | Keep canonical audio this long after a job ends |
+| `--audio-retention` | `24h` | `WHISPER_AUDIO_RETENTION` | Keep canonical audio this long after a job is done |
+| `--failed-retention` | `24h` | `WHISPER_FAILED_RETENTION` | Keep a failed job's media at least this long after it failed, so it can be retried |
+| `--failed-retention-max-disk` | `80%` | `WHISPER_FAILED_RETENTION_MAX_DISK` | When the data disk is fuller than this (a percentage, or a size such as `200GiB`), or free space nears `--min-free-bytes`, purge the oldest failed jobs' media first |
 | `--job-retention` | `720h` | `WHISPER_JOB_RETENTION` | Keep finished jobs and transcripts this long |
 | `--pending-worker-ttl` | `168h` | `WHISPER_PENDING_WORKER_TTL` | Delete pending workers unseen this long |
 | `--max-pending-workers` | `100` | `WHISPER_MAX_PENDING_WORKERS` | Cap on workers awaiting approval |
@@ -404,15 +410,17 @@ for the authoritative list.
 | `--metrics-push-interval` | `15s` | `WHISPER_METRICS_PUSH_INTERVAL` | Push interval |
 | `--metrics-labels` | | `WHISPER_METRICS_LABELS` | Extra labels, `k=v,k=v` |
 
-### Client commands: `submit`, `status`, `fetch`
+### Client commands: `submit`, `status`, `fetch`, `retry`, `delete`
 
-All three take `--server` (`WHISPER_SERVER`) and `--token` (`WHISPER_TOKEN`).
+All of them take `--server` (`WHISPER_SERVER`) and `--token` (`WHISPER_TOKEN`).
 
 | Command | Flags |
 |---|---|
 | `submit <file>` | `--queue` (`public`), `--model` (`small.en`), `--language` (server default `en`; `auto` allowed), `--weight` (`low`, `medium`, `high`), `--prompt` (at most 800 characters), `--label`, `--source` (recorded, never fetched), `--metadata` (JSON object), `--idempotency-key`, `--json` (print the job document instead of its ID) |
-| `status [<job-id>]` | `--queue` (`public`), `--state`, `--limit` (`50`). With a job ID, prints that job; otherwise lists the queue |
-| `fetch <job-id>` | `-o/--output` (file instead of stdout), `--json` (`result.json` instead of text) |
+| `status [<job-id>]` | `--queue` (`public`), `--state`, `--sort` (`created`, `newest`, `state`), `--limit` (`50`). With a job ID, prints that job; otherwise lists the queue |
+| `fetch <job-id>` | `-o/--output` (file instead of stdout), `--json` (`result.json` instead of text), `--partial` (a job that is not done: what exists so far, gaps marked) |
+| `retry [<job-id>]` | With a job ID, retries that failed job. Otherwise retries the queue's failed jobs: `--queue` (`public`), `--since` (failed after, RFC 3339), `--dry-run` (list, change nothing), `--json` |
+| `delete [<job-id>]` | With a job ID, deletes that job. Otherwise deletes the queue's jobs in a state: `--queue` (`public`), `--state` (required), `--since`, `--dry-run`, `--json` |
 
 ### `admin` (offline, against a data directory)
 
@@ -486,7 +494,8 @@ Key series: `whisper_jobs`, `whisper_tasks`, `whisper_queue_backlog_cost`,
 `whisper_sched_served_cost_total`, `whisper_leases_ended_total`,
 `whisper_workers`, `whisper_worker_last_seen_timestamp_seconds`,
 `whisper_worker_slots_busy`, `whisper_task_realtime_factor`,
-`whisper_data_free_bytes`, `whisper_storage_bytes`.
+`whisper_data_free_bytes`, `whisper_storage_bytes` (`kind="failed"`: media held
+for failed jobs), `whisper_failed_jobs_retryable`.
 
 Never label by job, lease or client. `route` labels use the route pattern, not
 the raw path.

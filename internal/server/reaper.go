@@ -71,24 +71,17 @@ func (s *Server) reapOnce(ctx context.Context) {
 		counts["jobs_assembled"]++
 	}
 
-	purges, err := s.st.MediaToPurge(ctx, now.Add(-s.cfg.AudioRetention))
+	purges, err := s.st.MediaToPurge(ctx, now.Add(-s.cfg.AudioRetention), now.Add(-s.cfg.FailedRetention))
 	fail("media to purge", err)
 	for _, p := range purges {
-		if p.Original {
-			if err := s.purgeOriginal(ctx, p.JobID); err != nil {
-				fail("purge original", err)
-			} else {
-				counts["originals_purged"]++
-			}
-		}
-		if p.Canonical {
-			if err := s.purgeCanonical(ctx, p.JobID); err != nil {
-				fail("purge canonical", err)
-			} else {
-				counts["canonicals_purged"]++
-			}
-		}
+		o, c, err := s.purgeTerminalMedia(ctx, p.JobID, p.Original, p.Canonical)
+		fail("purge media", err)
+		counts["originals_purged"] += o
+		counts["canonicals_purged"] += c
 	}
+	n, err := s.purgeFailedForDisk(ctx)
+	fail("purge failed jobs' media for disk", err)
+	counts["failed_media_purged_for_disk"] = n
 
 	expired, err := s.st.JobsToDelete(ctx, now.Add(-s.cfg.JobRetention))
 	fail("jobs to delete", err)
@@ -100,18 +93,18 @@ func (s *Server) reapOnce(ctx context.Context) {
 		counts["jobs_deleted"]++
 	}
 
-	n, err := s.st.DeleteEndedLeases(ctx, now.Add(-s.cfg.EndedLeaseRetention))
+	n64, err := s.st.DeleteEndedLeases(ctx, now.Add(-s.cfg.EndedLeaseRetention))
 	fail("delete ended leases", err)
-	counts["leases_deleted"] = int(n)
-	n, err = s.ops.PrunePendingWorkers(ctx, now.Add(-s.cfg.PendingWorkerTTL))
+	counts["leases_deleted"] = int(n64)
+	n64, err = s.ops.PrunePendingWorkers(ctx, now.Add(-s.cfg.PendingWorkerTTL))
 	fail("delete pending workers", err)
-	counts["pending_workers_deleted"] = int(n)
-	n, err = s.ops.PruneRejectedWorkers(ctx, now.Add(-s.cfg.RejectedWorkerRetention))
+	counts["pending_workers_deleted"] = int(n64)
+	n64, err = s.ops.PruneRejectedWorkers(ctx, now.Add(-s.cfg.RejectedWorkerRetention))
 	fail("delete rejected workers", err)
-	counts["rejected_workers_deleted"] = int(n)
-	n, err = s.ops.DeleteExpiredSessions(ctx)
+	counts["rejected_workers_deleted"] = int(n64)
+	n64, err = s.ops.DeleteExpiredSessions(ctx)
 	fail("delete sessions", err)
-	counts["sessions_deleted"] = int(n)
+	counts["sessions_deleted"] = int(n64)
 
 	ev := obs.Debug(&s.log, obs.EventReaperRun)
 	for k, v := range counts {
@@ -135,6 +128,90 @@ func (s *Server) touchedSince(jobID string, t time.Time) bool {
 		}
 	}
 	return false
+}
+
+// purgeTerminalMedia deletes a job's original and/or canonical media under
+// the job lock, after re-reading the job: media is only ever purged from a
+// done or failed job, so a job retried since it was selected keeps its
+// media. It returns how many originals and canonicals it purged.
+func (s *Server) purgeTerminalMedia(ctx context.Context, jobID string, original, canonical bool) (int, int, error) {
+	unlock := s.locks.Lock(jobID)
+	defer unlock()
+	j, err := s.st.Job(ctx, jobID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	if !j.Terminal() {
+		return 0, 0, nil
+	}
+	var o, c int
+	if original && j.OriginalPurgedAt == nil {
+		if err := s.purgeOriginal(ctx, jobID); err != nil {
+			return o, c, err
+		}
+		o++
+	}
+	if canonical && j.Canonical != nil && j.CanonicalPurgedAt == nil {
+		if err := s.purgeCanonical(ctx, jobID); err != nil {
+			return o, c, err
+		}
+		c++
+	}
+	return o, c, nil
+}
+
+// diskOverage returns how many bytes the reaper should free from failed
+// jobs' media (DESIGN.md §8.5): what the data filesystem is above
+// FailedMaxDisk, or what it lacks of twice MinFreeBytes (the upload guard
+// is near), whichever is more. It uses the same free-space probe as the
+// upload guard and /readyz.
+func (s *Server) diskOverage() int64 {
+	free, err := s.freeBytes(s.cfg.DataDir)
+	if err != nil {
+		return 0
+	}
+	var need int64
+	if total, err := s.totalBytes(s.cfg.DataDir); err == nil && total > 0 {
+		need = (total - free) - s.cfg.FailedMaxDisk.Limit(total)
+	}
+	if low := 2 * s.cfg.MinFreeBytes; free < low {
+		need = max(need, low-free)
+	}
+	return need
+}
+
+// purgeFailedForDisk purges failed jobs' media, oldest failure first, until
+// the disk overage is covered, whatever their failed retention. Live jobs'
+// media is never touched. It returns how many jobs it purged.
+func (s *Server) purgeFailedForDisk(ctx context.Context) (int, error) {
+	need := s.diskOverage()
+	if need <= 0 {
+		return 0, nil
+	}
+	ms, err := s.st.FailedJobMedia(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, m := range ms {
+		if need <= 0 {
+			break
+		}
+		o, c, err := s.purgeTerminalMedia(ctx, m.JobID, m.Original, m.Canonical)
+		if err != nil {
+			return n, err
+		}
+		if o+c > 0 {
+			n++
+			need -= m.Bytes
+			s.log.Info().Str(obs.FieldJobID, m.JobID).Int64("bytes", m.Bytes).
+				Msg("purged a failed job's media to free disk space")
+		}
+	}
+	return n, nil
 }
 
 func (s *Server) purgeCanonical(ctx context.Context, jobID string) error {

@@ -36,7 +36,14 @@ type queueView struct {
 	Jobs       []jobRow
 	State      string // the state filter in force
 	States     []api.JobState
+	Sort       string // the order in force: sortState, sortNewest or sortOldest
+	Sorts      []sortChoice
 	NextPage   string // URL of the next page, if any
+	// Matching counts the jobs matching the state filter (when one is set),
+	// for "select all matching".
+	Matching int
+	CSRF     string
+	Script   string // URL of queue.js
 
 	CanManageGrants bool
 	Grants          []grantRow
@@ -103,12 +110,15 @@ func (u *UI) handleQueue(w http.ResponseWriter, r *http.Request, rc *reqCtx) err
 		CanEditWeight: rc.can(auth.ActSetQueueWeight, res),
 		Visibility:    auth.VisibilityOn(rc.P.Principal, q.Name),
 		States:        []api.JobState{api.JobPreparing, api.JobQueued, api.JobRunning, api.JobDone, api.JobFailed},
+		Sorts:         sortChoices,
 		Back:          "/ui/queues/" + url.PathEscape(q.Name),
+		CSRF:          rc.CSRF,
+		Script:        u.assetURL("queue.js"),
 	}
 	v.SeesJobs = v.Visibility != auth.SeesNone
 	v.OwnOnly = v.Visibility == auth.SeesOwn
 	if v.SeesJobs {
-		if err := u.queueJobs(r, rc, q, &v); err != nil {
+		if err := u.queueJobs(w, r, rc, q, &v); err != nil {
 			return err
 		}
 	}
@@ -127,11 +137,96 @@ func (u *UI) handleQueue(w http.ResponseWriter, r *http.Request, rc *reqCtx) err
 	return nil
 }
 
+// The queue page's orders (#67). The URL carries the API's parameters
+// (?sort=state, ?sort=created&order=desc|asc); the choice is remembered per
+// browser in the sortCookie cookie.
+const (
+	sortState  = "state"
+	sortNewest = "created-desc"
+	sortOldest = "created-asc"
+	sortCookie = "wn_queue_sort"
+)
+
+// sortChoice is one option of the order control.
+type sortChoice struct{ Value, Label string }
+
+var sortChoices = []sortChoice{
+	{sortState, "state (running, waiting, failed, done)"},
+	{sortNewest, "newest first"},
+	{sortOldest, "oldest first"},
+}
+
+// queueSort returns the page's order: from the URL (the order control's
+// order_by, or the API's sort and order), and then remembered in a cookie;
+// else from the cookie; else by state.
+func queueSort(w http.ResponseWriter, r *http.Request) (string, error) {
+	q := r.URL.Query()
+	var v string
+	switch sort, order, by := q.Get("sort"), q.Get("order"), q.Get("order_by"); {
+	case by != "":
+		for _, sc := range sortChoices {
+			if by == sc.Value {
+				v = by
+			}
+		}
+		if v == "" {
+			return "", badRequest("Unknown sort order.")
+		}
+	case sort == "" && order == "":
+		if c, err := r.Cookie(sortCookie); err == nil {
+			for _, sc := range sortChoices {
+				if c.Value == sc.Value {
+					return c.Value, nil
+				}
+			}
+		}
+		return sortState, nil
+	case sort == "state" && order == "":
+		v = sortState
+	case sort == "created" && (order == "" || order == "desc"):
+		v = sortNewest
+	case sort == "created" && order == "asc":
+		v = sortOldest
+	default:
+		return "", badRequest("Unknown sort order.")
+	}
+	http.SetCookie(w, &http.Cookie{Name: sortCookie, Value: v, Path: "/ui/queues", MaxAge: 365 * 24 * 3600,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+	return v, nil
+}
+
+// sortParams sets the URL parameters of order v.
+func sortParams(p url.Values, v string) {
+	switch v {
+	case sortState:
+		p.Set("sort", "state")
+	case sortNewest:
+		p.Set("sort", "created")
+		p.Set("order", "desc")
+	case sortOldest:
+		p.Set("sort", "created")
+		p.Set("order", "asc")
+	}
+}
+
 // queueJobs fills the job list: everything for SeesAll, the principal's own
-// jobs for SeesOwn, filtered by state and paged by cursor.
-func (u *UI) queueJobs(r *http.Request, rc *reqCtx, q *store.Queue, v *queueView) error {
+// jobs for SeesOwn, filtered by state, in the chosen order and paged by
+// cursor.
+func (u *UI) queueJobs(w http.ResponseWriter, r *http.Request, rc *reqCtx, q *store.Queue, v *queueView) error {
 	qv := r.URL.Query()
 	f := store.JobFilter{QueueID: q.ID, Limit: 50, Cursor: qv.Get("cursor")}
+	var err error
+	if v.Sort, err = queueSort(w, r); err != nil {
+		return err
+	}
+	switch v.Sort {
+	case sortState:
+		f.Sort = store.SortState
+	case sortNewest:
+		f.Sort, f.Desc = store.SortCreated, true
+	default:
+		f.Sort = store.SortCreated
+	}
 	if v.Visibility == auth.SeesOwn {
 		f.ClientID = rc.P.ID
 	}
@@ -157,7 +252,14 @@ func (u *UI) queueJobs(r *http.Request, rc *reqCtx, q *store.Queue, v *queueView
 		if v.State != "" {
 			p.Set("state", v.State)
 		}
+		sortParams(p, v.Sort)
 		v.NextPage = v.Back + "?" + p.Encode()
+	}
+	if v.State != "" {
+		f.Cursor = ""
+		if v.Matching, err = u.srv.Store().CountJobs(r.Context(), f); err != nil {
+			return err
+		}
 	}
 	return nil
 }

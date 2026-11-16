@@ -29,6 +29,8 @@ type Options struct {
 	Submit      SubmitCmd      `cmd:"" help:"Submit media to a queue"`
 	Status      StatusCmd      `cmd:"" help:"Show job status, or list a queue's jobs"`
 	Fetch       FetchCmd       `cmd:"" help:"Download a finished transcript"`
+	Retry       RetryCmd       `cmd:"" help:"Retry a failed job, or a queue's failed jobs"`
+	Delete      DeleteCmd      `cmd:"" help:"Delete a job, or a queue's jobs in a state"`
 	Bench       BenchCmd       `cmd:"" help:"Measure whisper-cli speed and memory on this machine"`
 	Admin       AdminCmd       `cmd:"" help:"Offline administration of a server data directory"`
 	SandboxExec SandboxExecCmd `cmd:"" name:"sandbox-exec" hidden:"" help:"Internal: confine and exec a child process"`

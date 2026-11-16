@@ -26,6 +26,9 @@ type JobOutputs struct {
 	Prepare *TaskOutput
 	// Transcribe holds the done transcribe tasks in seq order.
 	Transcribe []TaskOutput
+	// Missing holds the transcribe tasks that are not done, in seq order,
+	// with only Seq and the sample range set.
+	Missing []TaskOutput
 }
 
 // JobOutputs returns the finished task outputs of a job.
@@ -37,9 +40,9 @@ func (s *Store) JobOutputs(ctx context.Context, jobID string) (*JobOutputs, erro
 	if n == 0 {
 		return nil, fmt.Errorf("job %s: %w", jobID, ErrNotFound)
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT seq, kind, COALESCE(start_sample, 0), COALESCE(end_sample, 0), result,
-		COALESCE(engine_version, ''), COALESCE(worker_id, ''), COALESCE(compute_ms, 0)
-		FROM tasks WHERE job_id = ? AND state = 'done' ORDER BY seq`, jobID)
+	rows, err := s.r.QueryContext(ctx, `SELECT seq, kind, state = 'done', COALESCE(start_sample, 0),
+		COALESCE(end_sample, 0), result, COALESCE(engine_version, ''), COALESCE(worker_id, ''), COALESCE(compute_ms, 0)
+		FROM tasks WHERE job_id = ? AND (state = 'done' OR kind = 'transcribe') ORDER BY seq`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("job outputs: %w", err)
 	}
@@ -48,10 +51,15 @@ func (s *Store) JobOutputs(ctx context.Context, jobID string) (*JobOutputs, erro
 	for rows.Next() {
 		var t TaskOutput
 		var kind string
+		var done bool
 		var result sql.NullString
-		if err := rows.Scan(&t.Seq, &kind, &t.StartSample, &t.EndSample, &result, &t.EngineVersion,
+		if err := rows.Scan(&t.Seq, &kind, &done, &t.StartSample, &t.EndSample, &result, &t.EngineVersion,
 			&t.WorkerID, &t.ComputeMS); err != nil {
 			return nil, fmt.Errorf("job outputs: %w", err)
+		}
+		if !done {
+			out.Missing = append(out.Missing, TaskOutput{Seq: t.Seq, StartSample: t.StartSample, EndSample: t.EndSample})
+			continue
 		}
 		if result.Valid {
 			t.Result = json.RawMessage(result.String)

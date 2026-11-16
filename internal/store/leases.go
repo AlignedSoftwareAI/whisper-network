@@ -230,8 +230,9 @@ func failedAttempts(kind api.TaskKind, seq int, workers []string) string {
 
 // countedFailureSQL is a condition (over leases, unqualified) that a lease
 // counts as a failed attempt: it failed, other than before work started, or
-// expired.
-const countedFailureSQL = `outcome IN ('failed','expired') AND stage IS NOT 'pre-work'`
+// expired, since the job was last retried (leases.retry, DESIGN.md §4.2).
+const countedFailureSQL = `outcome IN ('failed','expired') AND stage IS NOT 'pre-work'
+	AND retry = (SELECT retries FROM jobs WHERE jobs.id = leases.job_id)`
 
 // failedOn returns the distinct workers that failed a task (not counting
 // pre-work failures) or let a lease on it expire, in the order of their first such lease. Their number is the

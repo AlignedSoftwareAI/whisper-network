@@ -24,6 +24,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /job/{id}/transcript", s.authed(anyHuman, s.handleTranscript))
 	mux.Handle("GET /job/{id}/result", s.authed(anyHuman, s.handleResult))
 	mux.Handle("DELETE /job/{id}", s.authed(anyHuman, s.handleDeleteJob))
+	mux.Handle("POST /job/{id}/retry", s.authed(anyHuman, s.handleRetryJob))
+	mux.Handle("POST /queue/{q}/bulk", s.authed(anyHuman, s.handleBulkJobs))
 	mux.Handle("POST /client", s.authed(anyHuman, s.handleCreateClient))
 	mux.Handle("GET /client/{id}", s.authed(anyHuman, s.handleGetClient))
 	mux.Handle("DELETE /client/{id}", s.authed(anyHuman, s.handleRevokeClient))

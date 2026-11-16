@@ -73,5 +73,10 @@ func (s *Server) refreshStats(ctx context.Context) {
 	if free, err := s.freeBytes(s.cfg.DataDir); err == nil {
 		snap.DataFreeBytes = free
 	}
+	if fs, err := s.st.FailedJobStats(ctx); err == nil {
+		snap.Storage.Failed, snap.RetryableFailedJobs = fs.Bytes, fs.Retryable
+	} else if ctx.Err() == nil {
+		s.log.Warn().Err(err).Msg("stats refresh: failed job stats failed")
+	}
 	s.metrics.SetSnapshot(snap)
 }

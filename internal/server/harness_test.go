@@ -124,6 +124,7 @@ type harness struct {
 	logs    *syncBuffer
 	metrics *obs.Metrics
 	free    atomic.Int64
+	total   atomic.Int64 // the data filesystem's size
 	dir     string
 	admin   string // client token with admin on *
 }
@@ -135,6 +136,7 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 	h := &harness{t: t, ctx: t.Context(), clk: &fakeClock{t: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 		logs: &syncBuffer{}, dir: t.TempDir()}
 	h.free.Store(100 << 30)
+	h.total.Store(200 << 30)
 	cfg := DefaultConfig()
 	cfg.DataDir = h.dir
 	cfg.TaskTarget = 3 * time.Second
@@ -157,7 +159,8 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 	h.metrics = obs.NewMetrics(metrics.NewSet())
 	logger := obs.NewLogger(zerolog.New(h.logs).With().Timestamp().Logger(), obs.ModeServer)
 	h.srv, err = New(cfg, Deps{Store: h.st, Blobs: h.blobs, Logger: logger, Metrics: h.metrics, Now: h.clk.Now,
-		FreeBytes: func(string) (int64, error) { return h.free.Load(), nil }, LookupModel: lookupTestModel})
+		FreeBytes:  func(string) (int64, error) { return h.free.Load(), nil },
+		TotalBytes: func(string) (int64, error) { return h.total.Load(), nil }, LookupModel: lookupTestModel})
 	require.NoError(t, err)
 	h.ts = httptest.NewServer(h.srv.Handler())
 	t.Cleanup(func() {
