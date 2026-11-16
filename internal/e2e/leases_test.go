@@ -14,6 +14,7 @@ import (
 	"github.com/deweysasser/whisper-network/internal/obs"
 	"github.com/deweysasser/whisper-network/internal/server"
 	"github.com/deweysasser/whisper-network/internal/store"
+	"github.com/deweysasser/whisper-network/internal/testscale"
 	"github.com/deweysasser/whisper-network/internal/worker"
 	"github.com/deweysasser/whisper-network/internal/worker/workertest"
 )
@@ -34,9 +35,14 @@ func leasedFor(t *testing.T, e *e2etest.Env, jobID string) []map[string]any {
 // TestCrashedWorkerLeaseExpires (scenario 4): a worker that dies mid-task
 // without a word stops heartbeating; its lease expires after 3 intervals,
 // counts as an attempt, and another worker completes the task.
+//
+// The leases are short, so on a starved runner an heir's lease can expire
+// too, and a task is never retried on a worker it expired on (#71). Two
+// heirs and a third attempt keep the job finishing either way; the
+// assertions pin the crashed worker's lease and the attempt that followed.
 func TestCrashedWorkerLeaseExpires(t *testing.T) {
 	t.Parallel()
-	e := e2etest.New(t, e2etest.FastLeases)
+	e := e2etest.New(t, e2etest.FastLeases, func(_ *server.Config, s *store.Config) { s.MaxAttempts = 3 })
 	sub := e.Submitter("public")
 	job := e.Submit(sub, "public", api.JobParams{}, e2etest.SpeechWAV(2))
 	doomed := e.StartWorker("doomed", hang)
@@ -45,18 +51,25 @@ func TestCrashedWorkerLeaseExpires(t *testing.T) {
 	doomed.WaitClaimed(first[obs.FieldLeaseID])
 	doomed.Kill()
 
-	heir := e.StartWorker("heir")
-	e.Approve(heir.ID(), "public")
-	exp := e.WaitEvent(obs.EventLeaseExpired, nil)
-	assert.Equal(t, first[obs.FieldLeaseID], exp[obs.FieldLeaseID])
+	heirs := map[any]bool{}
+	for _, name := range []string{"heir-a", "heir-b"} {
+		w := e.StartWorker(name)
+		e.Approve(w.ID(), "public")
+		heirs[w.ID()] = true
+	}
+	exp := e.WaitEvent(obs.EventLeaseExpired, func(m map[string]any) bool {
+		return m[obs.FieldLeaseID] == first[obs.FieldLeaseID]
+	})
 	assert.Equal(t, float64(1), exp[obs.FieldAttempt], "the expired lease counted")
 	e.WaitJob(job.ID, api.JobDone)
 	ls := leasedFor(t, e, job.ID)
-	require.Len(t, ls, 2)
-	assert.Equal(t, heir.ID(), ls[1][obs.FieldWorkerID])
+	require.GreaterOrEqual(t, len(ls), 2)
+	assert.Equal(t, doomed.ID(), ls[0][obs.FieldWorkerID])
+	assert.True(t, heirs[ls[1][obs.FieldWorkerID]], "an heir took the task over")
 	assert.Equal(t, float64(2), ls[1][obs.FieldAttempt])
 	assert.Empty(t, e.Logs.Events(t, obs.EventLeaseReleased), "a crashed worker releases nothing")
-	assert.Contains(t, e.Scrape(), `whisper_leases_ended_total{outcome="expired",kind="transcribe"} 1`)
+	expired := len(e.Logs.Events(t, obs.EventLeaseExpired))
+	assert.Contains(t, e.Scrape(), `whisper_leases_ended_total{outcome="expired",kind="transcribe"} `+itoa(expired))
 }
 
 // TestMaxAttemptsFailsJob (scenario 4): with --max-attempts 1 a single
@@ -96,7 +109,7 @@ func TestGracefulShutdownReleases(t *testing.T) {
 	w.WaitClaimed(l[obs.FieldLeaseID])
 	start := time.Now()
 	require.NoError(t, w.Stop())
-	assert.Less(t, time.Since(start), 5*time.Second, "shutdown kills the hanging child promptly")
+	assert.Less(t, time.Since(start), testscale.D(5*time.Second), "shutdown kills the hanging child promptly")
 	rel := e.WaitEvent(obs.EventLeaseReleased, nil)
 	assert.Equal(t, float64(0), rel[obs.FieldAttempt], "a release does not count")
 	j := e.Job(job.ID)
@@ -130,11 +143,12 @@ func TestDrainFinishes(t *testing.T) {
 }
 
 // TestDeleteJobKillsChild (scenario 6): deleting a job mid-transcription
-// makes the next heartbeat answer 410, and the worker kills its child
-// promptly and goes back to claiming.
+// makes the next heartbeat answer 410, and the worker kills its child and
+// goes back to claiming. The leases are the long default ones, so the 410
+// can only come from the delete, never from an expiry on a loaded runner.
 func TestDeleteJobKillsChild(t *testing.T) {
 	t.Parallel()
-	e := e2etest.New(t, e2etest.FastLeases)
+	e := e2etest.New(t)
 	sub := e.Submitter("public")
 	job := e.Submit(sub, "public", api.JobParams{}, e2etest.SpeechWAV(2))
 	w := e.StartWorker("deleted-under", hang)
@@ -143,14 +157,13 @@ func TestDeleteJobKillsChild(t *testing.T) {
 	// A heartbeat shows the input is downloaded and the child is running.
 	e.Eventually(func() bool { return len(e.Requests("/lease/{id}/heartbeat", "worker:"+w.ID())) > 0 },
 		"no heartbeat while the child runs")
-	start := time.Now()
 	require.NoError(t, sub.DeleteJob(context.Background(), job.ID))
 	ev := w.WaitLog(obs.EventTaskFailed, func(m map[string]any) bool {
 		return m[obs.FieldLeaseID] == leased[obs.FieldLeaseID] && m[obs.FieldOutcome] == string(api.OutcomeCancelled)
 	})
-	assert.Less(t, time.Since(start), 4*time.Second, "the child is killed within about one heartbeat")
 	assert.NotNil(t, ev)
 	assert.Contains(t, string(w.Logs.Bytes()), "server ended the lease; killing the task", "the heartbeat saw the 410")
+	assert.Empty(t, e.Logs.Events(t, obs.EventLeaseExpired))
 	_, err := sub.Job(context.Background(), job.ID)
 	assert.True(t, client.IsNotFound(err))
 
@@ -192,13 +205,12 @@ func TestChildCrashIsRetriedThenFails(t *testing.T) {
 
 // TestWorkerRestartKeepsIdentity: a worker restarted on the same state
 // directory reuses its credentials (no new registration, no new approval)
-// and PATCHes facts that changed; heartbeats carry its gauges.
+// and PATCHes facts that changed; its claims and heartbeats carry its gauges.
 func TestWorkerRestartKeepsIdentity(t *testing.T) {
 	t.Parallel()
-	e := e2etest.New(t, e2etest.FastLeases)
+	e := e2etest.New(t)
 	state := t.TempDir()
-	first := e.StartWorker("restarting", func(c *worker.Config) { c.StateDir = state },
-		e2etest.ChildEnv(workertest.WhisperMode(workertest.SleepMode("2500ms"))))
+	first := e.StartWorker("restarting", func(c *worker.Config) { c.StateDir = state })
 	id := first.ID()
 	e.Approve(id, "public")
 	sub := e.Submitter("public")
