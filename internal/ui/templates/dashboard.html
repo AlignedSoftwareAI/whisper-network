@@ -31,7 +31,7 @@
     {{- end}}
   </div>
   {{- end}}
-  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span>{{template "tile-label" (col "tile.audiorate")}}<small>jobs completed in the last hour</small></div>
+  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span>{{template "tile-label" (col "tile.audiorate")}}<small>tasks completed in the last hour</small></div>
   {{- with .Versions}}
   <div class="tile fleet-versions">
     {{template "tile-label" (col "tile.versions")}}

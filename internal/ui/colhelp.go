@@ -151,7 +151,7 @@ var columns = map[string]column{
 	"tile.online":  {Label: "workers online", Help: "Active workers seen in the last few minutes. Below: all workers by state; pending ones await approval."},
 	"tile.capacity": {Label: "slots in use · capacity", Help: "Task slots of online active workers, from their last heartbeat: in use / total. Available slots can take work now; deferred ones are on hosts busy with other work. Paused, pending and offline workers' slots are counted apart.",
 		More: designDoc + "#63-ui-ui"},
-	"tile.audiorate": {Label: "audio-hours / hour", Help: "Hours of audio in jobs completed in the last hour. A job counts only when its last task finishes, so long jobs arrive in lumps (#87 tracks it undercounting)."},
+	"tile.audiorate": {Label: "audio-hours / hour", Help: "Hours of audio transcribed by tasks completed in the last hour, across all queues. Each task counts as it completes, so a long job contributes steadily, and deleting a job afterwards does not change the figure."},
 	"tile.versions": {Label: "Fleet versions", Help: "Versions run by active and paused workers, with how many run each, compared with this server's. Mixed engine (whisper.cpp) versions mix engines within one transcript's provenance.",
 		More: designDoc + "#84-assembly-and-transcript-format"},
 
