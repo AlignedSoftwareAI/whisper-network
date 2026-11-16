@@ -166,6 +166,13 @@ type Downloads struct {
 	Last  *time.Time `json:"last"`
 }
 
+// Submitter identifies who created a job: an API client or a UI user.
+type Submitter struct {
+	Kind string `json:"kind"` // "client" or "user"
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
 // Job is the job status document returned by GET /job/{id} and list endpoints.
 type Job struct {
 	ID          string          `json:"id"`
@@ -178,6 +185,7 @@ type Job struct {
 	Label       string          `json:"label,omitempty"`
 	Source      string          `json:"source,omitempty"`
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	SubmittedBy *Submitter      `json:"submitted_by,omitempty"` // who created the job
 	Media       MediaInfo       `json:"media"`
 	Tasks       TaskCounts      `json:"tasks"`
 	CreatedAt   time.Time       `json:"created_at"`

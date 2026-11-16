@@ -81,7 +81,7 @@ func TestCanMatrix(t *testing.T) {
 		{"qa list B denied", user(qaA), ActListQueue, qB, false},
 		{"qa view foreign job on A", user(qaA), ActViewJob, jobA("x"), true},
 		{"qa does NOT download foreign job on A", user(qaA), ActDownloadTranscript, jobA("x"), false},
-		{"qa does NOT see foreign job content on A", user(qaA), ActViewJobContent, jobA("x"), false},
+		{"qa sees foreign job metadata on A", user(qaA), ActViewJobContent, jobA("x"), true},
 		{"qa+read_all downloads foreign job on A", user(qaA, readA), ActDownloadTranscript, jobA("x"), true},
 		{"qa view job on B denied", user(qaA), ActViewJob, jobB, false},
 		{"qa delete job on A", user(qaA), ActDeleteJob, jobA("x"), true},
@@ -140,7 +140,7 @@ func TestCanMatrix(t *testing.T) {
 		{"submit cannot create client", client(submitA), ActCreateClient, Resource{}, false},
 		{"viewall view other's A", client(viewA), ActViewJob, jobA("c2"), true},
 		{"viewall does NOT download other's A", client(viewA), ActDownloadTranscript, jobA("c2"), false},
-		{"viewall does NOT see other's content A", client(viewA), ActViewJobContent, jobA("c2"), false},
+		{"viewall sees other's metadata A", client(viewA), ActViewJobContent, jobA("c2"), true},
 		{"readall list A", client(readA), ActListQueue, qA, true},
 		{"readall view other's A", client(readA), ActViewJob, jobA("c2"), true},
 		{"readall content of other's A", client(readA), ActViewJobContent, jobA("c2"), true},
@@ -278,12 +278,13 @@ func TestVisibilityMatchesListQueue(t *testing.T) {
 	}
 }
 
-// TestJobAccessMatrix pins down the split between seeing a job and reading
-// it (issue #38) for every combination of the roles involved, on someone
-// else's job on queue A and on the principal's own job.
+// TestJobAccessMatrix pins down the split between seeing a job (status,
+// prompt, metadata, submitter) and reading its transcript (issue #38): only
+// the transcript needs read_all. Every combination of the roles involved,
+// on someone else's job on queue A and on the principal's own job.
 func TestJobAccessMatrix(t *testing.T) {
 	type want struct{ list, view, content, download bool }
-	all, statusOnly, none := want{true, true, true, true}, want{true, true, false, false}, want{}
+	all, statusOnly, none := want{true, true, true, true}, want{true, true, true, false}, want{}
 	foreign := Resource{Queue: "A", OwnerID: "someone-else"}
 	own := Resource{Queue: "A", OwnerID: "c1"}
 	tests := []struct {

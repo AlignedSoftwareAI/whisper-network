@@ -21,11 +21,14 @@ func Can(p Principal, a Action, r Resource) bool {
 		return admin || p.onQueue(api.RoleSubmit, r.Queue)
 	case ActListQueue:
 		return VisibilityOn(p, r.Queue) != SeesNone
-	case ActViewJob:
+	case ActViewJob, ActViewJobContent:
+		// Everything describing a job (status, prompt, metadata, submitter)
+		// goes to anyone who may see the job: a manager watching the queue
+		// needs who submitted what and why.
 		return admin || isOwner(p, r) || VisibilityOn(p, r.Queue) == SeesAll
-	case ActViewJobContent, ActDownloadTranscript:
-		// Content is separate from visibility: view_all and queue_admin
-		// see every job's status but not what is in it.
+	case ActDownloadTranscript:
+		// The transcript is engine output from untrusted media and may carry
+		// prompt injection, so reading it needs read_all (or ownership).
 		return admin || isOwner(p, r) || p.onQueue(api.RoleReadAll, r.Queue)
 	case ActDeleteJob:
 		return admin || isOwner(p, r) ||

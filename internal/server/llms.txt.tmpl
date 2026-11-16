@@ -52,7 +52,7 @@ Example:
 
 ## Wait for it
 
-`GET /job/{id}` returns the job document. Its `state` moves through:
+`GET /job/{id}` returns the job document: everything describing the job, including your `prompt`, `metadata`, and `submitted_by` (who created it: `{kind, id, name}`). Anyone who can see a job sees all of this; only the transcript and result need read permission. Its `state` moves through:
 
 - `preparing`: converting the media (only for non-canonical inputs)
 - `queued`: waiting for a worker

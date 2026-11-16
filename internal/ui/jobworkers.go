@@ -6,7 +6,6 @@ import (
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
-	"github.com/deweysasser/whisper-network/internal/server"
 	"github.com/deweysasser/whisper-network/internal/store"
 )
 
@@ -51,12 +50,12 @@ type jobRow struct {
 // queueJobRows builds the job table rows for jobs on queue: two indexed
 // queries for the whole page, whatever its length.
 func (u *UI) queueJobRows(ctx context.Context, rc *reqCtx, queue string, jobs []store.Job) ([]jobRow, error) {
-	now := u.srv.Now()
+	docs := u.srv.JobDocuments(ctx, rc.P.Principal, jobs)
 	rows := make([]jobRow, len(jobs))
 	byID := make(map[string]*jobRow, len(jobs))
 	var active, finished []string
 	for i := range jobs {
-		rows[i].Job = server.JobDocument(rc.P.Principal, &jobs[i], now)
+		rows[i].Job = docs[i]
 		byID[jobs[i].ID] = &rows[i]
 		if jobs[i].Terminal() {
 			finished = append(finished, jobs[i].ID)

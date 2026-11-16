@@ -14,9 +14,10 @@ import (
 	"github.com/deweysasser/whisper-network/internal/server"
 )
 
-// TestJobPageNeedsReadAccess: view_all and queue_admin see a job's status
-// but not its prompt or download links, and the downloads themselves are
-// refused; read_all, the owner's view and admin see and read everything.
+// TestJobPageNeedsReadAccess: view_all and queue_admin see everything
+// describing a job (status, prompt, submitter) but no download links, and
+// the downloads themselves are refused; read_all and admin can also read
+// the transcript.
 func TestJobPageNeedsReadAccess(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -42,14 +43,14 @@ func TestJobPageNeedsReadAccess(t *testing.T) {
 			resp, body := b.get("/ui/jobs/" + j.ID)
 			require.Equal(t, http.StatusOK, resp.StatusCode, body)
 			assert.Contains(t, body, "planning", "the status is visible")
+			assert.Contains(t, body, prompt, "the prompt is visible to anyone who sees the job")
+			assert.Contains(t, body, "Submitted by")
 			download := http.StatusForbidden
 			if tc.reads {
 				download = http.StatusOK
-				assert.Contains(t, body, prompt)
 				assert.Contains(t, body, "Download transcript")
 				assert.Contains(t, body, `href="/job/`+j.ID+`/result"`)
 			} else {
-				assert.NotContains(t, body, prompt)
 				assert.NotContains(t, body, "Download transcript")
 				assert.NotContains(t, body, `href="/job/`+j.ID+`/result"`)
 			}

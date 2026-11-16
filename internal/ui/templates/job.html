@@ -8,7 +8,7 @@
     {{with $j.Error}}<dt>Error</dt><dd class="error">{{.}}</dd>{{end}}
     <dt>Label</dt><dd>{{$j.Label}}</dd>
     {{with $j.Source}}<dt>Source</dt><dd><span class="wrap">{{.}}</span></dd>{{end}}
-    <dt>Owner</dt><dd><code>{{.Data.Owner}}</code></dd>
+    <dt>Submitted by</dt><dd>{{with .Data.Job.SubmittedBy}}{{if .Name}}{{.Name}} <span class="muted">({{.Kind}} <code>{{.ID}}</code>)</span>{{else}}{{.Kind}} <code>{{.ID}}</code>{{end}}{{else}}<code>{{.Data.Owner}}</code>{{end}}</dd>
     <dt>Weight</dt><dd>{{$j.Weight}}</dd>
     <dt>Model</dt><dd>{{$j.Model}} · {{$j.Language}}</dd>
     {{with $j.Prompt}}<dt>Prompt</dt><dd class="wrap">{{.}}</dd>{{end}}

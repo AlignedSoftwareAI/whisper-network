@@ -7,7 +7,6 @@ import (
 
 	"github.com/deweysasser/whisper-network/internal/api"
 	"github.com/deweysasser/whisper-network/internal/auth"
-	"github.com/deweysasser/whisper-network/internal/server"
 	"github.com/deweysasser/whisper-network/internal/store"
 )
 
@@ -60,7 +59,7 @@ func (u *UI) handleJob(w http.ResponseWriter, r *http.Request, rc *reqCtx) error
 	if err != nil {
 		return err
 	}
-	v := jobView{CSRF: rc.CSRF, Job: server.JobDocument(rc.P.Principal, j, u.srv.Now()), Owner: j.ClientID,
+	v := jobView{CSRF: rc.CSRF, Job: u.srv.JobDoc(r.Context(), rc.P.Principal, j), Owner: j.ClientID,
 		CanDelete:   rc.can(auth.ActDeleteJob, res),
 		CanDownload: j.State == api.JobDone && rc.can(auth.ActDownloadTranscript, res)}
 	if p := outs.Prepare; p != nil {
