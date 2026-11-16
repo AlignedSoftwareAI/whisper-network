@@ -7,6 +7,12 @@ import "time"
 // "client:<id>" or "worker:<id>"; scopes are "*", "queue:<name>" or
 // "worker:<id>".
 
+// ServerVersion is GET /admin/version: the server's own whisper-network
+// version, to compare with each worker's facts.version (DESIGN.md §6.3).
+type ServerVersion struct {
+	Version string `json:"version"`
+}
+
 // WorkerSummary is one entry of GET /admin/workers: the worker document
 // plus the approval record and latest heartbeat gauges.
 type WorkerSummary struct {

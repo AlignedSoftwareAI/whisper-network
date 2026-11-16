@@ -51,7 +51,7 @@ func (s *Server) refreshStats(ctx context.Context) {
 			continue
 		}
 		ws := obs.WorkerStat{ID: wk.ID, Hostname: wk.Facts.Hostname, Description: wk.Facts.Description,
-			EngineVersion: wk.Facts.EngineVersion, FFmpegVersion: wk.Facts.FFmpegVersion,
+			Version: wk.Facts.Version, EngineVersion: wk.Facts.EngineVersion, FFmpegVersion: wk.Facts.FFmpegVersion,
 			SandboxLevel: string(wk.Facts.SandboxLevel), Arch: wk.Facts.Arch, Slots: wk.Facts.Slots,
 			FailureStreak: wk.FailureStreak, AutoPaused: wk.State == api.WorkerPaused && wk.PauseReason != ""}
 		if wk.LastSeenAt != nil {

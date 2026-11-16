@@ -57,6 +57,7 @@ func TestAuthMatrix(t *testing.T) {
 		{"worker lists queue", "GET", "/queue/public", wtok, 403, api.ProblemForbidden},
 		{"worker creates client", "POST", "/client", wtok, 403, api.ProblemForbidden},
 		{"worker admin", "GET", "/admin/workers", wtok, 403, api.ProblemForbidden},
+		{"worker reads server version", "GET", "/admin/version", wtok, 403, api.ProblemForbidden},
 		{"client claims", "POST", "/worker/" + wid + "/leases", owner, 403, api.ProblemForbidden},
 		{"client heartbeat", "POST", "/lease/" + l.ID + "/heartbeat", owner, 403, api.ProblemForbidden},
 		{"client input", "GET", l.InputURL, owner, 403, api.ProblemForbidden},
@@ -86,6 +87,7 @@ func TestAuthMatrix(t *testing.T) {
 		// Admin and client management.
 		{"submitter lists workers", "GET", "/admin/workers", owner, 403, api.ProblemForbidden},
 		{"submitter audit", "GET", "/admin/audit", owner, 403, api.ProblemForbidden},
+		{"submitter server version", "GET", "/admin/version", owner, 403, api.ProblemForbidden},
 		{"submitter users", "GET", "/admin/users", owner, 403, api.ProblemForbidden},
 		{"submitter clients", "GET", "/admin/clients", owner, 403, api.ProblemForbidden},
 		{"submitter creates queue", "POST", "/admin/queues", owner, 403, api.ProblemForbidden},

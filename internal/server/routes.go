@@ -45,6 +45,7 @@ func (s *Server) routes() http.Handler {
 
 	// Admin API (admin.go).
 	mux.Handle("GET /admin/workers", s.authed(anyHuman, s.handleAdminListWorkers))
+	mux.Handle("GET /admin/version", s.authed(anyHuman, s.handleAdminVersion))
 	mux.Handle("POST /admin/workers/{id}/approve", s.authed(anyHuman, s.handleAdminApprove))
 	mux.Handle("POST /admin/workers/{id}/pause", s.authed(anyHuman, s.handleAdminWorkerState))
 	mux.Handle("POST /admin/workers/{id}/resume", s.authed(anyHuman, s.handleAdminWorkerState))

@@ -69,6 +69,7 @@ type WorkerStat struct {
 	ID            string
 	Hostname      string
 	Description   string
+	Version       string // whisper-network version
 	EngineVersion string
 	FFmpegVersion string
 	SandboxLevel  string
@@ -107,6 +108,9 @@ func (m *Metrics) SetSnapshot(s Snapshot) { m.snap.Store(&s) }
 
 // writeSnapshot renders the current snapshot in Prometheus text format.
 func (m *Metrics) writeSnapshot(w io.Writer) {
+	if v := m.version.Load(); v != nil {
+		metrics.WriteGaugeFloat64(w, series("whisper_server_info", "version", *v), 1)
+	}
 	s := m.snap.Load()
 	if s == nil {
 		return
@@ -195,7 +199,7 @@ func (m *Metrics) writeWorkers(w io.Writer, in []WorkerStat) {
 	for _, x := range ws {
 		metrics.WriteGaugeFloat64(w, series("whisper_worker_info",
 			"worker", x.ID, "hostname", x.Hostname, "description", x.Description,
-			"engine_version", x.EngineVersion, "ffmpeg_version", x.FFmpegVersion,
+			"version", x.Version, "engine_version", x.EngineVersion, "ffmpeg_version", x.FFmpegVersion,
 			"sandbox_level", x.SandboxLevel, "arch", x.Arch), 1)
 	}
 	for _, c := range cols {

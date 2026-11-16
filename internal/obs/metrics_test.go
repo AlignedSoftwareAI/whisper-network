@@ -114,7 +114,7 @@ func fixtureSnapshot() Snapshot {
 			Weight: 2, VTime: 41.5, EligibleWorkers: 2}},
 		Workers: []WorkerCount{{"active", 2}, {"pending", 1}},
 		WorkerInfo: []WorkerStat{{
-			ID: "w1", Hostname: `host"1`, Description: "desk", EngineVersion: "1.9.5",
+			ID: "w1", Hostname: `host"1`, Description: "desk", Version: "v0.5.0", EngineVersion: "1.9.5",
 			FFmpegVersion: "7.1", SandboxLevel: "full", Arch: "amd64",
 			LastSeen: time.Unix(1700000000, 0), Slots: 4, SlotsBusy: 3, ChildRSSBytes: 1 << 30,
 			Load1: 1.5, CPUThrottled: 2 * time.Second,
@@ -142,7 +142,7 @@ func TestSnapshotGauges(t *testing.T) {
 		`whisper_sched_vtime{queue="main"} 41.5`,
 		`whisper_queue_eligible_workers{queue="main"} 2`,
 		`whisper_workers{state="active"} 2`,
-		`whisper_worker_info{worker="w1",hostname="host\"1",description="desk",engine_version="1.9.5",ffmpeg_version="7.1",sandbox_level="full",arch="amd64"} 1`,
+		`whisper_worker_info{worker="w1",hostname="host\"1",description="desk",version="v0.5.0",engine_version="1.9.5",ffmpeg_version="7.1",sandbox_level="full",arch="amd64"} 1`,
 		`whisper_worker_last_seen_timestamp_seconds{worker="w1"} 1.7e+09`,
 		`whisper_worker_slots{worker="w1"} 4`,
 		`whisper_worker_slots_busy{worker="w1"} 3`,
@@ -309,4 +309,14 @@ func TestStartPushValidatesConfig(t *testing.T) {
 		_, err := m.StartPush(context.Background(), cfg)
 		assert.Error(t, err, name)
 	}
+}
+
+func TestServerInfo(t *testing.T) {
+	m := newTestMetrics()
+	assert.NotContains(t, scrape(t, m), "whisper_server_info", "no version set yet")
+	m.SetServerVersion("v0.5.0-dev+7.g420d428")
+	assert.Contains(t, scrape(t, m), `whisper_server_info{version="v0.5.0-dev+7.g420d428"} 1`,
+		"present before the first snapshot")
+	m.SetSnapshot(fixtureSnapshot())
+	assert.Contains(t, scrape(t, m), `whisper_server_info{version="v0.5.0-dev+7.g420d428"} 1`)
 }

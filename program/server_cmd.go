@@ -172,6 +172,7 @@ func (c *ServerCmd) serverConfig() (server.Config, error) {
 	cfg := server.DefaultConfig()
 	cfg.DataDir = c.Data
 	cfg.PublicURL = c.PublicURL
+	cfg.Version = Version
 	cfg.HeartbeatInterval = c.HeartbeatInterval
 	cfg.MaxClaimWait = c.MaxClaimWait
 	cfg.TaskTarget = c.TaskTarget
