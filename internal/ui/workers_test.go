@@ -286,7 +286,7 @@ func TestWorkersPageStats(t *testing.T) {
 	// The worker's page has the full breakdown.
 	resp, body = b.get("/ui/workers/" + wid)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	body = collapse.ReplaceAllString(body, " ")
+	body = plainHelp(collapse.ReplaceAllString(body, " "))
 	for _, want := range []string{
 		`<h2>Statistics</h2>`,
 		`<dt>Tasks done</dt><dd>1 (0 prepare, 1 transcribe) in 1 jobs</dd>`,
@@ -300,7 +300,7 @@ func TestWorkersPageStats(t *testing.T) {
 	assert.NotContains(t, body, `<dt>Last task</dt><dd><span class="muted">never`)
 
 	_, body = b.get("/ui/workers/" + idle)
-	body = collapse.ReplaceAllString(body, " ")
+	body = plainHelp(collapse.ReplaceAllString(body, " "))
 	assert.Contains(t, body, `<dt>Realtime factor</dt><dd><span class="muted">none yet</span></dd>`)
 	assert.Contains(t, body, `<dt>Failures</dt><dd>0 failed, 0 expired</dd>`)
 	assert.Contains(t, body, `<dt>Last task</dt><dd><span class="muted">never</span></dd>`)
@@ -336,7 +336,7 @@ func TestWorkersPageAutoPaused(t *testing.T) {
 
 	resp, body = b.get("/ui/workers/" + wid)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	body = regexp.MustCompile(`\s+`).ReplaceAllString(body, " ")
+	body = plainHelp(regexp.MustCompile(`\s+`).ReplaceAllString(body, " "))
 	for _, want := range []string{
 		`>auto-paused</span>`,
 		`Paused automatically by the circuit breaker: 2 consecutive failures across 2 jobs.`,

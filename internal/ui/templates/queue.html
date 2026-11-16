@@ -13,9 +13,9 @@
   </form>
   {{else}}
   <dl class="facts">
-    <dt>Description</dt><dd>{{$q.Description}}</dd>
-    <dt>Weight</dt><dd>{{$q.Weight}}</dd>
-    <dt>Upload cap</dt><dd>{{if $q.MaxUploadBytes}}{{bytes $q.MaxUploadBytes}}{{else}}default{{end}}</dd>
+    {{template "dt" (col "queuefact.desc")}}<dd>{{$q.Description}}</dd>
+    {{template "dt" (col "queuefact.weight")}}<dd>{{$q.Weight}}</dd>
+    {{template "dt" (col "queuefact.cap")}}<dd>{{if $q.MaxUploadBytes}}{{bytes $q.MaxUploadBytes}}{{else}}default{{end}}</dd>
   </dl>
   {{end}}
 </section>

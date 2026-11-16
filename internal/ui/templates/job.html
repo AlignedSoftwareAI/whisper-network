@@ -3,25 +3,25 @@
 <h1>Job {{with .Data.Name}}{{.}} <span class="muted small"><code>{{$j.ID}}</code></span>{{else}}<code>{{$j.ID}}</code>{{end}}</h1>
 <section class="card">
   <dl class="facts">
-    <dt>Queue</dt><dd><a href="/ui/queues/{{$j.Queue}}">{{$j.Queue}}</a></dd>
-    <dt>State</dt><dd><span class="badge job-{{$j.State}}" title="{{vhelp "job" $j.State}}">{{$j.State}}</span></dd>
-    {{with .Data.Error}}<dt>Error</dt><dd class="error">{{template "segs" .}}</dd>{{end}}
-    <dt>Label</dt><dd>{{$j.Label}}</dd>
-    {{with $j.Source}}<dt>Source</dt><dd><span class="wrap">{{.}}</span></dd>{{end}}
-    <dt>Submitted by</dt><dd>{{with .Data.Submitter}}{{template "ref" .}}{{else}}{{with .Data.Job.SubmittedBy}}{{if .Name}}{{.Name}} <span class="muted">({{.Kind}} <code>{{.ID}}</code>)</span>{{else}}{{.Kind}} <code>{{.ID}}</code>{{end}}{{else}}<code>{{.Data.Owner}}</code>{{end}}{{end}}</dd>
-    <dt>Weight</dt><dd>{{$j.Weight}}</dd>
-    <dt>Model</dt><dd>{{$j.Model}} · {{$j.Language}}</dd>
-    {{with $j.Prompt}}<dt>Prompt</dt><dd class="wrap">{{.}}</dd>{{end}}
-    <dt>Media</dt><dd>{{bytes $j.Media.OriginalBytes}} {{$j.Media.OriginalType}}{{if $j.Media.DurationS}} · {{secs $j.Media.DurationS}} of audio{{end}}
+    {{template "dt" (col "jobfact.queue")}}<dd><a href="/ui/queues/{{$j.Queue}}">{{$j.Queue}}</a></dd>
+    {{template "dt" (col "jobfact.state")}}<dd><span class="badge job-{{$j.State}}" title="{{vhelp "job" $j.State}}">{{$j.State}}</span></dd>
+    {{with .Data.Error}}{{template "dt" (col "jobfact.error")}}<dd class="error">{{template "segs" .}}</dd>{{end}}
+    {{template "dt" (col "jobfact.label")}}<dd>{{$j.Label}}</dd>
+    {{with $j.Source}}{{template "dt" (col "jobfact.source")}}<dd><span class="wrap">{{.}}</span></dd>{{end}}
+    {{template "dt" (col "jobfact.submitter")}}<dd>{{with .Data.Submitter}}{{template "ref" .}}{{else}}{{with .Data.Job.SubmittedBy}}{{if .Name}}{{.Name}} <span class="muted">({{.Kind}} <code>{{.ID}}</code>)</span>{{else}}{{.Kind}} <code>{{.ID}}</code>{{end}}{{else}}<code>{{.Data.Owner}}</code>{{end}}{{end}}</dd>
+    {{template "dt" (col "jobfact.weight")}}<dd>{{$j.Weight}}</dd>
+    {{template "dt" (col "jobfact.model")}}<dd>{{$j.Model}} · {{$j.Language}}</dd>
+    {{with $j.Prompt}}{{template "dt" (col "jobfact.prompt")}}<dd class="wrap">{{.}}</dd>{{end}}
+    {{template "dt" (col "jobfact.media")}}<dd>{{bytes $j.Media.OriginalBytes}} {{$j.Media.OriginalType}}{{if $j.Media.DurationS}} · {{secs $j.Media.DurationS}} of audio{{end}}
       {{if $j.Media.OriginalPurged}} · original purged{{end}}{{if $j.Media.AudioPurged}} · audio purged{{end}}</dd>
-    <dt>Tasks</dt><dd>{{$j.Tasks.Done}} done · {{$j.Tasks.Leased}} running · {{$j.Tasks.Pending}} pending · {{$j.Tasks.Failed}} failed · {{$j.Tasks.Cancelled}} cancelled · {{$j.Tasks.Total}} total</dd>
-    <dt>Created</dt><dd>{{when $j.CreatedAt}}</dd>
-    <dt>Started</dt><dd>{{whenp $j.StartedAt}}</dd>
-    <dt>Completed</dt><dd>{{whenp $j.CompletedAt}}</dd>
-    <dt>Timing</dt><dd>waited {{secsp $j.WaitS}} · elapsed {{secsp $j.ElapsedS}} · compute {{secs $j.ComputeS}}</dd>
-    <dt>Downloads</dt><dd>{{$j.Downloads.Count}}{{with $j.Downloads.Last}} · last {{when .}}{{end}}</dd>
-    {{if eq (print $j.State) "failed"}}<dt>Files</dt><dd>{{with $j.Media.KeptUntil}}kept until {{when .}} (sooner if the disk fills){{else}}purged; the job cannot be retried{{end}}</dd>{{end}}
-    {{if $j.Retries}}<dt>Retries</dt><dd>{{$j.Retries}}</dd>{{end}}
+    {{template "dt" (col "jobfact.tasks")}}<dd>{{$j.Tasks.Done}} done · {{$j.Tasks.Leased}} running · {{$j.Tasks.Pending}} pending · {{$j.Tasks.Failed}} failed · {{$j.Tasks.Cancelled}} cancelled · {{$j.Tasks.Total}} total</dd>
+    {{template "dt" (col "jobfact.created")}}<dd>{{when $j.CreatedAt}}</dd>
+    {{template "dt" (col "jobfact.started")}}<dd>{{whenp $j.StartedAt}}</dd>
+    {{template "dt" (col "jobfact.completed")}}<dd>{{whenp $j.CompletedAt}}</dd>
+    {{template "dt" (col "jobfact.timing")}}<dd>waited {{secsp $j.WaitS}} · elapsed {{secsp $j.ElapsedS}} · compute {{secs $j.ComputeS}}</dd>
+    {{template "dt" (col "jobfact.downloads")}}<dd>{{$j.Downloads.Count}}{{with $j.Downloads.Last}} · last {{when .}}{{end}}</dd>
+    {{if eq (print $j.State) "failed"}}{{template "dt" (col "jobfact.files")}}<dd>{{with $j.Media.KeptUntil}}kept until {{when .}} (sooner if the disk fills){{else}}purged; the job cannot be retried{{end}}</dd>{{end}}
+    {{if $j.Retries}}{{template "dt" (col "jobfact.retries")}}<dd>{{$j.Retries}}</dd>{{end}}
   </dl>
   <div class="actions">
     {{if .Data.CanDownload}}

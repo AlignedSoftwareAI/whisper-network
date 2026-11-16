@@ -17,13 +17,13 @@
 {{define "stats"}}
 <div id="stats" hx-get="/ui/dashboard/stats" hx-trigger="every 15s" hx-swap="outerHTML">
 <section class="tiles" aria-label="Fleet">
-  <div class="tile"><span class="big">{{.RunningTasks}}</span><span>running tasks</span></div>
-  <div class="tile"><span class="big">{{.PendingTasks}}</span><span>pending tasks</span></div>
-  <div class="tile"><span class="big">{{.WorkersOnline}}</span><span>workers online</span>
+  <div class="tile"><span class="big">{{.RunningTasks}}</span>{{template "tile-label" (col "tile.running")}}</div>
+  <div class="tile"><span class="big">{{.PendingTasks}}</span>{{template "tile-label" (col "tile.pending")}}</div>
+  <div class="tile"><span class="big">{{.WorkersOnline}}</span>{{template "tile-label" (col "tile.online")}}
     <small>{{.WorkersActive}} active · {{.WorkersPaused}} paused · {{if .WorkersPending}}<a href="/ui/workers">{{.WorkersPending}} pending</a>{{else}}0 pending{{end}}</small></div>
   {{- with .Capacity}}
-  <div class="tile capacity" title="Task slots of online active workers, from their last heartbeat: in use / total. Available slots can take work now; deferred ones are on hosts busy with other work. Paused, pending and offline workers are counted apart.">
-    <span class="big">{{.All.InUse}}/{{.All.Total}}</span><span>slots in use · capacity</span>
+  <div class="tile capacity">
+    <span class="big">{{.All.InUse}}/{{.All.Total}}</span>{{template "tile-label" (col "tile.capacity")}}
     <small class="available">{{.All.Available}} available{{if .All.Deferred}} · {{.All.Deferred}} deferred{{end}}</small>
     <small class="by-kind">transcribe {{.Transcribe.InUse}}/{{.Transcribe.Total}} · prepare {{.Prepare.InUse}}/{{.Prepare.Total}}</small>
     {{- if or .Paused .Pending .Offline}}
@@ -31,10 +31,10 @@
     {{- end}}
   </div>
   {{- end}}
-  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span><span>audio-hours / hour</span><small>jobs completed in the last hour</small></div>
+  <div class="tile"><span class="big">{{hours .AudioHoursPerHour}}</span>{{template "tile-label" (col "tile.audiorate")}}<small>jobs completed in the last hour</small></div>
   {{- with .Versions}}
-  <div class="tile fleet-versions" title="Versions run by active and paused workers, with how many run each. Worker versions are compared with this server's; mixed engine versions mix engines within transcripts' provenance.">
-    <span>Fleet versions</span>
+  <div class="tile fleet-versions">
+    {{template "tile-label" (col "tile.versions")}}
     <small>server <code>{{.Server}}</code></small>
     <small class="worker-versions">{{range $i, $v := .Workers}}{{if $i}} · {{end}}<code>{{or .Version "unknown"}}</code> ×{{.Count}}
       {{- if eq (print .Skew) "older"}} <span class="badge outdated">outdated</span>

@@ -44,7 +44,14 @@
      the header's tooltip and, through the ⓘ button (ui.js toggles it), a
      popover that keyboards, touch screens and screen readers reach. Its
      argument is a column (col, colText). */}}
-{{define "th"}}<th scope="col"{{with .Class}} class="{{.}}"{{end}} title="{{.Help}}">{{.Label}}<button type="button" class="colhelp" aria-label="About {{.Label}}" aria-describedby="{{.ID}}" aria-controls="{{.ID}}" aria-expanded="false">ⓘ</button><span class="colhelp-text" id="{{.ID}}" role="tooltip" hidden>{{.Help}}{{with .More}} <a href="{{.}}" rel="noopener">more…</a>{{end}}</span></th>{{end}}
+{{define "th"}}<th scope="col"{{with .Class}} class="{{.}}"{{end}} title="{{.Help}}">{{.Label}}{{template "help" .}}</th>{{end}}
+{{/* dt is a definition-list term with the same help; tile-label is a
+     dashboard tile's caption. */}}
+{{define "dt"}}<dt title="{{.Help}}">{{.Label}}{{template "help" .}}</dt>{{end}}
+{{define "tile-label"}}<span class="tile-label" title="{{.Help}}">{{.Label}}{{template "help" .}}</span>{{end}}
+{{/* help is the ⓘ button and the popover it toggles, shared by th, dt and
+     tile-label. */}}
+{{define "help"}}<button type="button" class="colhelp" aria-label="About {{.Label}}" aria-describedby="{{.ID}}" aria-controls="{{.ID}}" aria-expanded="false">ⓘ</button><span class="colhelp-text" id="{{.ID}}" role="tooltip" hidden>{{.Help}}{{with .More}} <a href="{{.}}" rel="noopener">more…</a>{{end}}</span>{{end}}
 
 {{/* ref names a worker, job or client (#57, #58, #60; labels.go): its name
      with the short id after it, the full id in the tooltip, linked to its

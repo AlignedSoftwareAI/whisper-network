@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"html"
+	"io/fs"
 	"net/http"
 	"regexp"
 	"strings"
@@ -51,13 +52,28 @@ func (e *env) registerWorker(facts api.WorkerFacts, g *api.Gauges) (string, stri
 
 var (
 	thRE   = regexp.MustCompile(`(?s)<th\b([^>]*)>(.*?)</th>`)
+	dtRE   = regexp.MustCompile(`(?s)<dt\b([^>]*)>(.*?)</dt>`)
 	descRE = regexp.MustCompile(`aria-describedby="([^"]+)"`)
+
+	helpRE      = regexp.MustCompile(`<button type="button" class="colhelp"[^>]*>ⓘ</button><span class="colhelp-text"[^>]*>.*?</span>`)
+	dtTitleRE   = regexp.MustCompile(`<dt title="[^"]*">`)
+	tileLabelRE = regexp.MustCompile(`<span class="tile-label" title="[^"]*">`)
 )
 
-// TestColumnHelp walks every table on every page and fails on a column
-// header without help (#79): a tooltip, and an ⓘ button whose
-// aria-describedby names the help text on the page. Row headers (the grant
-// matrix's queue names) are not columns.
+// plainHelp strips field and tile help from a page, so that tests about a
+// field's value can match "<dt>Label</dt><dd>…" and "<span>caption</span>".
+func plainHelp(body string) string {
+	body = helpRE.ReplaceAllString(body, "")
+	body = dtTitleRE.ReplaceAllString(body, "<dt>")
+	return tileLabelRE.ReplaceAllString(body, "<span>")
+}
+
+// TestColumnHelp walks every page and fails on a column header, a
+// definition-list term or a dashboard tile without help (#79): a tooltip,
+// and an ⓘ button whose aria-describedby names the help text on the page.
+// Row headers (the grant matrix's queue names) are not columns. The pages
+// are set up to show every conditional field they can; TestTemplatesUseHelp
+// covers the rest statically.
 func TestColumnHelp(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -67,6 +83,11 @@ func TestColumnHelp(t *testing.T) {
 	e.failJob(wa, waTok)
 	j := e.storeJob("someone", 2)
 	e.claim(wa, waTok)
+	free, load := int64(1<<30), 50.0
+	wg, _ := e.registerWorker(api.WorkerFacts{Hostname: "g", OS: "linux", Arch: "amd64", Cores: 4,
+		SandboxLevel: api.SandboxFull, Kinds: []api.TaskKind{api.KindTranscribe}, Slots: 1, Models: []string{"small.en"}},
+		&api.Gauges{ModelsBytes: &free, WorkBytes: &free, StateFreeBytes: &free, HostLoad: &load, DeferredForLoad: true,
+			CachedModels: []api.CachedModel{{Name: "small.en", Bytes: 1}}})
 	clients, err := e.st.ListClients(e.ctx)
 	require.NoError(t, err)
 
@@ -74,29 +95,48 @@ func TestColumnHelp(t *testing.T) {
 	_, bulk := b.post("/ui/queues/public/bulk", map[string][]string{"op": {"retry-selected"},
 		"job_id": {failed.ID}, "confirm": {"1"}})
 	pages := map[string]string{"bulk result": bulk}
-	for _, p := range []string{"/ui/", "/ui/workers", "/ui/queues", "/ui/queues/public", "/ui/jobs/" + j.ID,
+	for _, p := range []string{"/ui/", "/ui/workers", "/ui/workers/" + wa, "/ui/workers/" + wg, "/ui/queues",
+		"/ui/queues/public", "/ui/jobs/" + j.ID, "/ui/jobs/" + failed.ID,
 		"/ui/users", "/ui/clients", "/ui/clients/" + clients[0].ID, "/ui/audit"} {
 		resp, body := b.get(p)
 		require.Equal(t, http.StatusOK, resp.StatusCode, p)
 		pages[p] = body
 	}
-	for p, body := range pages {
-		headers := thRE.FindAllStringSubmatch(body, -1)
-		assert.NotEmpty(t, headers, p)
-		for _, h := range headers {
-			attrs, inner := h[1], h[2]
-			if strings.Contains(attrs, `scope="row"`) {
-				continue
-			}
-			assert.Contains(t, attrs, `title="`, "%s: %s", p, h[0])
-			assert.Contains(t, inner, `<button type="button" class="colhelp"`, "%s: %s", p, h[0])
-			assert.Contains(t, inner, `aria-expanded="false"`, "%s: %s", p, h[0])
-			m := descRE.FindStringSubmatch(inner)
-			if assert.NotNil(t, m, "%s: %s", p, h[0]) {
-				assert.Equal(t, 1, strings.Count(body, `id="`+m[1]+`"`), "%s: help %s is on the page once", p, m[1])
-			}
+	labelled := func(p, body, tag string, attrs, inner string) {
+		assert.Contains(t, attrs, `title="`, "%s: %s", p, tag)
+		assert.Contains(t, inner, `<button type="button" class="colhelp"`, "%s: %s", p, tag)
+		assert.Contains(t, inner, `aria-expanded="false"`, "%s: %s", p, tag)
+		m := descRE.FindStringSubmatch(inner)
+		if assert.NotNil(t, m, "%s: %s", p, tag) {
+			assert.Equal(t, 1, strings.Count(body, `id="`+m[1]+`"`), "%s: help %s is on the page once", p, m[1])
 		}
 	}
+	for p, body := range pages {
+		headers, terms := thRE.FindAllStringSubmatch(body, -1), dtRE.FindAllStringSubmatch(body, -1)
+		assert.NotEmpty(t, append(headers, terms...), p)
+		for _, h := range headers {
+			if strings.Contains(h[1], `scope="row"`) {
+				continue
+			}
+			labelled(p, body, h[0], h[1], h[2])
+		}
+		for _, d := range terms {
+			labelled(p, body, d[0], d[1], d[2])
+		}
+		// A tile holds no nested div, so it ends at the first </div>.
+		for _, tile := range strings.Split(body, `<div class="tile`)[1:] {
+			tile, _, _ = strings.Cut(tile, "</div>")
+			assert.Contains(t, tile, `<span class="tile-label" title="`, "%s: tile %s", p, tile)
+			assert.Contains(t, tile, `<button type="button" class="colhelp"`, "%s: tile %s", p, tile)
+		}
+	}
+	for _, p := range []string{"/ui/workers/" + wa, "/ui/workers/" + wg, "/ui/jobs/" + failed.ID} {
+		assert.NotEmpty(t, dtRE.FindAllString(pages[p], -1), p)
+	}
+	assert.Contains(t, pages["/ui/workers/"+wg], `id="help-workerfact-hostcpu"`, "conditional facts are walked")
+	assert.Contains(t, pages["/ui/workers/"+wg], `id="help-workerfact-cached"`)
+	assert.Contains(t, pages["/ui/jobs/"+failed.ID], `id="help-jobfact-retries"`)
+	assert.Equal(t, 6, strings.Count(pages["/ui/"], `<span class="tile-label"`), "every dashboard tile is walked")
 	assert.Contains(t, pages["/ui/audit"], `as &lt;area&gt;.&lt;verb&gt;`, "help text is escaped")
 	assert.Contains(t, pages["/ui/workers"], `Average realtime factor: seconds of audio transcribed per second of compute.`)
 	assert.Contains(t, pages["/ui/clients/"+clients[0].ID], `aria-describedby="help-role-submit"`,
@@ -105,6 +145,32 @@ func TestColumnHelp(t *testing.T) {
 	resp, js := b.get(regexp.MustCompile(`src="(/ui/static/ui\.js\?v=[0-9a-f]+)"`).FindStringSubmatch(pages["/ui/"])[1])
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, js, "aria-expanded")
+}
+
+// TestTemplatesUseHelp checks the templates themselves, so that a field shown
+// only in a state no test reaches still has help: no page writes a bare
+// <dt>, a tile without a tile-label, or a help key the map lacks.
+func TestTemplatesUseHelp(t *testing.T) {
+	t.Parallel()
+	keyRE := regexp.MustCompile(`\(col "([^"]+)"`)
+	files, err := fs.Glob(templateFS, "templates/*.html")
+	require.NoError(t, err)
+	for _, f := range files {
+		b, err := fs.ReadFile(templateFS, f)
+		require.NoError(t, err)
+		src := string(b)
+		if f != "templates/layout.html" {
+			assert.NotContains(t, src, "<dt", "%s: use {{template \"dt\" (col …)}}", f)
+		}
+		for _, tile := range strings.Split(src, `<div class="tile`)[1:] {
+			tile, _, _ = strings.Cut(tile, "</div>")
+			assert.Contains(t, tile, `{{template "tile-label" (col "`, "%s: tile %s", f, tile)
+		}
+		for _, m := range keyRE.FindAllStringSubmatch(src, -1) {
+			_, err := col(m[1])
+			assert.NoError(t, err, f)
+		}
+	}
 }
 
 func TestColumnLookup(t *testing.T) {
@@ -229,6 +295,7 @@ func TestLabelsRendered(t *testing.T) {
 	assert.Contains(t, body, `href="/ui/clients/`+owner+`"`, "root sees the submitting client, linked")
 
 	_, body = viewer.get("/ui/jobs/" + labelled.ID)
+	body = plainHelp(body)
 	assert.Contains(t, body, `<dt>Submitted by</dt><dd><span class="ref" title="`+owner+`">`+html.EscapeString(adminClient[0].Name)+` <span class="muted">(`,
 		"a viewer of the job sees which client submitted it (#82)")
 	assert.NotContains(t, body, `a client</span>`, "a viewer of the job sees who submitted it (#82)")
@@ -266,6 +333,7 @@ func TestRevokedClientPage(t *testing.T) {
 	require.NoError(t, e.srv.Ops().RevokeClient(e.ctx, server.CLIActor(), c.ID))
 	resp, body := e.login("root").get("/ui/clients/" + c.ID)
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	body = plainHelp(body)
 	assert.Contains(t, body, `<h1>Client retired <span class="badge state-rejected"`)
 	assert.Contains(t, body, "<dt>Revoked</dt>")
 	assert.Contains(t, body, `by <span class="ref">system</span>`)
@@ -311,7 +379,7 @@ func TestCapacityTile(t *testing.T) {
 	e.storeJob("someone", 1)
 
 	_, body := e.login("root").get("/ui/")
-	body = regexp.MustCompile(`\s+`).ReplaceAllString(body, " ")
+	body = plainHelp(regexp.MustCompile(`\s+`).ReplaceAllString(body, " "))
 	for _, want := range []string{
 		`<span class="big">3/6</span><span>slots in use · capacity</span>`,
 		`<small class="available">1 available · 2 deferred</small>`,

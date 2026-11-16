@@ -273,8 +273,9 @@ then commits since the tag. The dashboard's Fleet versions tile counts workers
 per version and flags a fleet running mixed whisper.cpp versions.
 
 **Reading the UI.** Workers, jobs and API clients appear by name (a job by its
-label) with a short id after it, each linked to its page; every table column
-has an ⓘ explaining it. The dashboard's Capacity tile shows task slots in use
+label) with a short id after it, each linked to its page; every table column,
+details field (a worker's facts and statistics, a job's, queue's or
+client's details) and dashboard tile has an ⓘ explaining it. The dashboard's Capacity tile shows task slots in use
 and available across the fleet, and per queue. A queue's page summarizes its
 pending tasks and says why they are waiting (no eligible worker, no worker
 with the model, prepare needing a full sandbox, the only able worker already

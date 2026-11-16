@@ -4,11 +4,11 @@
 <h1>Client {{.Client.Name}}{{if .Client.RevokedAt}} <span class="badge state-rejected" title="{{vhelp "badge" "revoked"}}">revoked</span>{{end}}</h1>
 <section class="card">
   <dl class="facts client-facts">
-    <dt>Client ID</dt><dd><code>{{.Client.ID}}</code></dd>
-    <dt>Created</dt><dd>{{when .Client.CreatedAt}} by {{template "ref" .CreatedBy}}</dd>
-    <dt>Last used</dt><dd>{{ago .Client.LastUsedAt}}</dd>
-    {{with .Client.RevokedAt}}<dt>Revoked</dt><dd>{{when .}}</dd>{{end}}
-    <dt>Roles</dt><dd>{{range .Client.Grants}}<span class="chip">{{.Role}} {{.Scope}}</span>{{else}}<span class="muted">none</span>{{end}}</dd>
+    {{template "dt" (col "clientfact.id")}}<dd><code>{{.Client.ID}}</code></dd>
+    {{template "dt" (col "clientfact.created")}}<dd>{{when .Client.CreatedAt}} by {{template "ref" .CreatedBy}}</dd>
+    {{template "dt" (col "clientfact.used")}}<dd>{{ago .Client.LastUsedAt}}</dd>
+    {{with .Client.RevokedAt}}{{template "dt" (col "clientfact.revoked")}}<dd>{{when .}}</dd>{{end}}
+    {{template "dt" (col "clientfact.roles")}}<dd>{{range .Client.Grants}}<span class="chip">{{.Role}} {{.Scope}}</span>{{else}}<span class="muted">none</span>{{end}}</dd>
   </dl>
 </section>
 {{if .Saved}}<p class="saved" role="status">Permissions saved: {{.Added}} added, {{.Removed}} removed. The token is unchanged; the new permissions apply from its next request.</p>{{end}}

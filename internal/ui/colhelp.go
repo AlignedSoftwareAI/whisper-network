@@ -5,14 +5,16 @@ import (
 	"strings"
 )
 
-// Every table column explains itself (#79, DESIGN.md §6.3): its header
-// carries the help text as a hover tooltip and as an ⓘ button that shows the
-// same text, for keyboards, touch screens and screen readers. The "th"
-// template renders such a header from a column; columns is the one source of
-// the text, so a page cannot ship a header without help (the column lookup
-// fails the render, and a test walks every page's headers).
+// Every table column, definition-list term and dashboard tile explains
+// itself (#79, DESIGN.md §6.3): its label carries the help text as a hover
+// tooltip and as an ⓘ button that shows the same text, for keyboards, touch
+// screens and screen readers. The "th", "dt" and "tile-label" templates
+// render such a label from a column (all share the "help" partial); columns
+// is the one source of the text, so a page cannot ship a label without help
+// (the lookup fails the render, and tests walk every page and template).
 
-// column is one table header and its explanation.
+// column is one labelled field (a table header, a <dt> term or a tile
+// caption) and its explanation.
 type column struct {
 	ID    string // DOM id of the help text, unique per page
 	Label string
@@ -25,7 +27,7 @@ type column struct {
 // project repository.
 const designDoc = "https://github.com/deweysasser/whisper-network/blob/main/DESIGN.md"
 
-// columns maps a column key ("page.column") to its header and help.
+// columns maps a key ("page.column", "page.field") to its label and help.
 var columns = map[string]column{
 	// Dashboard: queues.
 	"dash.queue":     {Label: "Queue", Help: "The queue; open it for its jobs and pending detail."},
@@ -142,6 +144,79 @@ var columns = map[string]column{
 	"audit.action": {Label: "Action", Help: "What was done, as <area>.<verb>, e.g. worker.approve."},
 	"audit.target": {Label: "Target", Help: "What it was done to: a user, client, worker, job or queue."},
 	"audit.detail": {Label: "Detail", Help: "The change's parameters, as JSON."},
+
+	// Dashboard tiles (the caption under each figure).
+	"tile.running": {Label: "running tasks", Help: "Tasks a worker holds a lease on now, across all queues."},
+	"tile.pending": {Label: "pending tasks", Help: "Tasks waiting for a worker, across all queues."},
+	"tile.online":  {Label: "workers online", Help: "Active workers seen in the last few minutes. Below: all workers by state; pending ones await approval."},
+	"tile.capacity": {Label: "slots in use · capacity", Help: "Task slots of online active workers, from their last heartbeat: in use / total. Available slots can take work now; deferred ones are on hosts busy with other work. Paused, pending and offline workers' slots are counted apart.",
+		More: designDoc + "#63-ui-ui"},
+	"tile.audiorate": {Label: "audio-hours / hour", Help: "Hours of audio in jobs completed in the last hour. A job counts only when its last task finishes, so long jobs arrive in lumps (#87 tracks it undercounting)."},
+	"tile.versions": {Label: "Fleet versions", Help: "Versions run by active and paused workers, with how many run each, compared with this server's. Mixed engine (whisper.cpp) versions mix engines within one transcript's provenance.",
+		More: designDoc + "#84-assembly-and-transcript-format"},
+
+	// Queue page facts.
+	"queuefact.desc":   {Label: "Description", Help: "What the queue is for, set by its queue admin."},
+	"queuefact.weight": {Label: "Weight", Help: "The queue's share of the fleet relative to other queues (default 100).", More: designDoc + "#82-scheduling-weighted-fair-queueing"},
+	"queuefact.cap":    {Label: "Upload cap", Help: "The largest upload the queue accepts; default is the server's limit."},
+
+	// Job page facts.
+	"jobfact.queue":     {Label: "Queue", Help: "The queue the job was submitted to."},
+	"jobfact.state":     {Label: "State", Help: "preparing: converting the upload; queued: waiting for a worker; running: tasks in progress; done; failed."},
+	"jobfact.error":     {Label: "Error", Help: "Why the job failed: the failing task's last reason."},
+	"jobfact.label":     {Label: "Label", Help: "The submitter's name for the job, shown in lists."},
+	"jobfact.source":    {Label: "Source", Help: "Where the submitter says the media came from, e.g. a file name or URL."},
+	"jobfact.submitter": {Label: "Submitted by", Help: "The user or API client that created the job (the API's submitted_by); linked for client admins."},
+	"jobfact.weight":    {Label: "Weight", Help: "The job's priority class within the queue: high, medium or low.", More: designDoc + "#82-scheduling-weighted-fair-queueing"},
+	"jobfact.model":     {Label: "Model", Help: "The whisper model and language the job is transcribed with."},
+	"jobfact.prompt":    {Label: "Prompt", Help: "Text given to whisper as the initial prompt, to steer spelling and style."},
+	"jobfact.media":     {Label: "Media", Help: "The upload's size and type, and the audio length once prepared. Purged files are deleted under the retention policy."},
+	"jobfact.tasks":     {Label: "Tasks", Help: "The job's tasks by state: one prepare, then one transcribe per audio span. Cancelled tasks will not run because the job failed."},
+	"jobfact.created":   {Label: "Created", Help: "When the job was submitted."},
+	"jobfact.started":   {Label: "Started", Help: "When a worker first took one of its tasks."},
+	"jobfact.completed": {Label: "Completed", Help: "When the job finished, done or failed."},
+	"jobfact.timing":    {Label: "Timing", Help: "waited: created to started; elapsed: created to completed; compute: wall time workers spent on its tasks, summed (it can exceed elapsed when tasks run in parallel)."},
+	"jobfact.downloads": {Label: "Downloads", Help: "How many times the transcript was fetched, and when last."},
+	"jobfact.files":     {Label: "Files", Help: "Until when a failed job's media is kept so it can be retried; the disk filling purges it sooner."},
+	"jobfact.retries":   {Label: "Retries", Help: "How many times the job was retried after failing."},
+
+	// Worker page facts.
+	"workerfact.id":       {Label: "ID", Help: "The worker's id, which tasks, grants and the audit log refer to."},
+	"workerfact.host":     {Label: "Hostname", Help: "The host name the worker reported when it registered."},
+	"workerfact.desc":     {Label: "Description", Help: "The worker's --description, shown as its name when set."},
+	"workerfact.cpu":      {Label: "CPU", Help: "The host's CPU model and logical core count, as the worker reported them."},
+	"workerfact.mem":      {Label: "Memory", Help: "The host's total memory."},
+	"workerfact.platform": {Label: "Platform", Help: "Operating system / CPU architecture of the worker binary."},
+	"workerfact.versions": {Label: "Versions", Help: "whisper-network, whisper.cpp engine and ffmpeg versions the worker runs; transcripts record them as provenance."},
+	"workerfact.sandbox": {Label: "Sandbox", Help: "How strongly the worker isolates media tools: full (filesystem and network confined), fs-only (filesystem only) or none. Prepare tasks need the server's minimum, full by default.",
+		More: designDoc + "#74-priority-and-sandbox"},
+	"workerfact.kinds":   {Label: "Kinds", Help: "Task kinds the worker offers: prepare (convert uploads) and/or transcribe."},
+	"workerfact.models":  {Label: "Models", Help: "Whisper models the worker offers; it only gets tasks for these."},
+	"workerfact.slots":   {Label: "Slots", Help: "Tasks the worker runs at once; then, from its last heartbeat, slots busy now, the host's 1-minute load average and the memory (RSS) of its child processes."},
+	"workerfact.hostcpu": {Label: "Host CPU", Help: "CPU used on the host by processes other than the worker's own, over the last minute. Above the worker's --max-host-load it stops claiming tasks (busy host) until load falls."},
+	"workerfact.disk":    {Label: "Disk", Help: "In the worker's state directory: the model cache (including partial downloads), task work directories, and free space on that filesystem. ? means not reported."},
+	"workerfact.cached":  {Label: "Cached models", Help: "Complete model files in the worker's cache; a task for another model downloads it first."},
+	"workerfact.seen":    {Label: "Last seen", Help: "When the worker last contacted the server; online if active and seen in the last few minutes."},
+	"workerfact.reg":     {Label: "Registered", Help: "When the worker first registered with the server."},
+	"workerfact.decided": {Label: "Decided by", Help: "Who last approved, rejected, paused or resumed the worker; system for the circuit breaker."},
+
+	// Worker page statistics.
+	"workerstat.done":     {Label: "Tasks done", Help: "Tasks the worker completed, by kind, and the distinct jobs they belonged to."},
+	"workerstat.audio":    {Label: "Audio", Help: "Hours of audio the worker has transcribed."},
+	"workerstat.compute":  {Label: "Compute", Help: "Wall time the worker spent on completed tasks."},
+	"workerstat.rtf":      {Label: "Realtime factor", Help: "Audio transcribed / compute time on transcribe tasks: 10× means an hour of audio in six minutes. Higher is faster."},
+	"workerstat.failures": {Label: "Failures", Help: "Leases the worker failed or let expire. Failure rate: those as a share of all its counted outcomes (completed + failed + expired)."},
+	"workerstat.streak": {Label: "Failure streak", Help: "Failed or expired leases in a row, and the jobs they span; a completed task ends it; failures that are the input's fault do not count. At the server's --worker-failure-limit (default 3) spanning at least 2 jobs, the circuit breaker pauses the worker.",
+		More: designDoc + "#42-state-machines"},
+	"workerstat.first": {Label: "First task", Help: "When the worker finished its first task."},
+	"workerstat.last":  {Label: "Last task", Help: "When the worker last finished a task."},
+
+	// Client page details.
+	"clientfact.id":      {Label: "Client ID", Help: "The client's id, which audit entries and job owners refer to."},
+	"clientfact.created": {Label: "Created", Help: "When the client was created, and by whom."},
+	"clientfact.used":    {Label: "Last used", Help: "When the client's token was last used."},
+	"clientfact.revoked": {Label: "Revoked", Help: "When the token was revoked; programs using it are refused."},
+	"clientfact.roles":   {Label: "Roles", Help: "The client's grants: a role on a scope (* or a queue).", More: designDoc + "#5-authorization"},
 }
 
 // col returns the header of column key, with an optional cell class. A
