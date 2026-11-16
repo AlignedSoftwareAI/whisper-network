@@ -8,7 +8,6 @@ import (
 	"math"
 	"mime/multipart"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
@@ -280,8 +279,7 @@ type browser struct {
 }
 
 func (e *env) browser() *browser {
-	jar, err := cookiejar.New(nil)
-	require.NoError(e.t, err)
+	jar := &fakeJar{now: e.clk.Now, c: map[string]*http.Cookie{}}
 	return &browser{e: e, c: &http.Client{Jar: jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
@@ -349,4 +347,40 @@ func (b *browser) do(method, path string, form url.Values, hdr map[string]string
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(b.e.t, err)
 	return resp, string(body)
+}
+
+// fakeJar is a cookie jar for the one test server that judges expiry by the
+// env's fake clock. net/http/cookiejar uses the wall clock, so a session
+// cookie that expires hours after the fake clock's fixed date would vanish
+// once the real date passes it.
+type fakeJar struct {
+	mu  sync.Mutex
+	now func() time.Time
+	c   map[string]*http.Cookie
+}
+
+func (j *fakeJar) SetCookies(_ *url.URL, cs []*http.Cookie) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, c := range cs {
+		if c.MaxAge < 0 || !c.Expires.IsZero() && !c.Expires.After(j.now()) {
+			delete(j.c, c.Name)
+			continue
+		}
+		j.c[c.Name] = &http.Cookie{Name: c.Name, Value: c.Value, Expires: c.Expires}
+	}
+}
+
+func (j *fakeJar) Cookies(*url.URL) []*http.Cookie {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []*http.Cookie
+	for name, c := range j.c {
+		if !c.Expires.IsZero() && !c.Expires.After(j.now()) {
+			delete(j.c, name)
+			continue
+		}
+		out = append(out, &http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	return out
 }
