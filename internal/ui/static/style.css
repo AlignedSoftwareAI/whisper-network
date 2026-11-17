@@ -62,7 +62,8 @@ h2 { font-size: 1.15rem; margin: 0 0 0.75rem; }
 .top nav a[aria-current="page"] { color: var(--fg); border-bottom: 2px solid var(--accent); }
 .who { display: flex; align-items: center; gap: 0.75rem; }
 
-main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
+/* No max-width: the window size is the user's choice, and wide tables use it. */
+main { padding: 1rem; }
 
 /* Cards and layout */
 .card {
@@ -90,6 +91,19 @@ table.data th { font-size: 0.85em; color: var(--muted); font-weight: 600; white-
 table.data .n { text-align: right; font-variant-numeric: tabular-nums; }
 table.data td.warn { color: var(--warn); font-weight: 700; }
 table.share meter { width: 8rem; vertical-align: middle; }
+
+/* A horizontally scrolled table keeps its identifying column in view: the
+   first column, or the second on a table marked pin-2 (e.g. after a
+   selection checkbox). Pinned cells need an opaque background and sit above
+   the cells sliding under them; a 1px right edge marks the seam. (A
+   background, not box-shadow, which the workers table uses for row flags.) */
+.scroll > table.data:not(.pin-2) > * > tr > :first-child:not([colspan]),
+.scroll > table.data.pin-2 > * > tr > :nth-child(2):not([colspan]) {
+  position: sticky; left: 0; z-index: 1;
+  background: linear-gradient(to left, var(--border) 1px, var(--card) 1px);
+}
+.scroll > table.data:not(.pin-2) > thead > tr > :first-child,
+.scroll > table.data.pin-2 > thead > tr > :nth-child(2) { z-index: 2; }
 
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0.5rem 0; }
 dl.facts dt { color: var(--muted); }
@@ -131,7 +145,10 @@ button.link.danger { color: var(--danger); }
 
 /* Workers table: pending rows are flagged, rejected ones fade. */
 table.workers tr.worker-pending td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
-table.workers tr.worker-rejected { opacity: 0.7; }
+/* Fade the cells' contents, not the row: a translucent pinned cell would
+   show the columns scrolling beneath it. */
+table.workers tr.worker-rejected > td:not(:first-child),
+table.workers tr.worker-rejected > td:first-child > * { opacity: 0.7; }
 td.row-actions { white-space: nowrap; }
 td.row-actions > * + * { margin-left: 0.35rem; }
 button.small, .button.small { padding: 0.1rem 0.55rem; font-size: 0.85em; }
