@@ -70,7 +70,7 @@
   {{template "csrf" .CSRF}}
   <input type="hidden" name="state" value="{{.Data.State}}">
   <div class="scroll">
-  <table class="data">
+  <table class="data pin-2">
     <thead><tr><th scope="col" title="{{(col "queue.select").Help}}"><input type="checkbox" data-select-page aria-label="Select all on this page" aria-describedby="help-queue-select" hidden><span class="colhelp-text" id="help-queue-select" hidden>{{(col "queue.select").Help}}</span><button type="button" class="colhelp" aria-label="About Select" aria-describedby="help-queue-select" aria-controls="help-queue-select" aria-expanded="false">ⓘ</button></th>{{template "th" (col "queue.job")}}{{template "th" (col "queue.state")}}{{template "th" (col "queue.weight")}}{{template "th" (col "queue.model")}}{{template "th" (col "queue.audio" "n")}}{{template "th" (col "queue.tasks" "n")}}{{template "th" (col "queue.workers")}}{{template "th" (col "queue.created")}}</tr></thead>
     <tbody>
     {{range .Data.Jobs}}
