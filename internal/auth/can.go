@@ -39,7 +39,7 @@ func Can(p Principal, a Action, r Resource) bool {
 		ActGrantProcess, ActGrantQueueRole:
 		return admin || p.onQueue(api.RoleQueueAdmin, r.Queue)
 	case ActApproveWorker, ActPauseWorker, ActResumeWorker, ActRejectWorker,
-		ActViewWorker:
+		ActDeleteWorker, ActViewWorker:
 		return admin || p.workerAdminFor(r.WorkerID)
 	case ActCreateClient, ActRevokeClient:
 		return admin || p.holds(api.RoleClientAdmin, scopeAll)

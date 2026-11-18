@@ -50,6 +50,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /admin/workers/{id}/pause", s.authed(anyHuman, s.handleAdminWorkerState))
 	mux.Handle("POST /admin/workers/{id}/resume", s.authed(anyHuman, s.handleAdminWorkerState))
 	mux.Handle("POST /admin/workers/{id}/reject", s.authed(anyHuman, s.handleAdminWorkerState))
+	mux.Handle("DELETE /admin/workers/{id}", s.authed(anyHuman, s.handleAdminDeleteWorker))
 	mux.Handle("GET /admin/queues", s.authed(anyHuman, s.handleAdminListQueues))
 	mux.Handle("POST /admin/queues", s.authed(anyHuman, s.handleAdminCreateQueue))
 	mux.Handle("GET /admin/users", s.authed(anyHuman, s.handleAdminListUsers))

@@ -23,6 +23,10 @@ type workersView struct {
 	// ServerVersion is the server's own version, which the Version column
 	// compares against.
 	ServerVersion string
+	// DeletableRejected counts the rejected workers the principal may
+	// delete, whatever the filter; the "Delete all rejected" action is
+	// offered when it is not zero.
+	DeletableRejected int
 }
 
 // workerRow is one row of the workers table. CSRF is carried per row
@@ -87,6 +91,7 @@ type workerDetail struct {
 	// Controls, each shown only when the principal may use it.
 	ApproveQueues []string // queues the principal may grant process on
 	CanReject     bool
+	CanDelete     bool     // a rejected worker the principal may delete now
 	AddQueues     []string // further queues grantable to an active worker
 }
 
@@ -144,10 +149,13 @@ func (u *UI) handleWorkers(w http.ResponseWriter, r *http.Request, rc *reqCtx) e
 	}
 	for i := range ws {
 		wk := &ws[i]
-		if v.State != "" && string(wk.State) != v.State {
+		if !mayViewWorker(rc, wk.ID) {
 			continue
 		}
-		if !mayViewWorker(rc, wk.ID) {
+		if mayDeleteWorker(rc, wk) {
+			v.DeletableRejected++
+		}
+		if v.State != "" && string(wk.State) != v.State {
 			continue
 		}
 		grants, err := u.processGrants(ctx, wk)
@@ -297,7 +305,14 @@ func (u *UI) workerDetailFor(ctx context.Context, rc *reqCtx, wk *store.Worker, 
 		}
 	}
 	v.CanReject = wk.State != api.WorkerRejected && rc.can(auth.ActRejectWorker, auth.Resource{WorkerID: wk.ID})
+	v.CanDelete = mayDeleteWorker(rc, wk)
 	return v, nil
+}
+
+// mayDeleteWorker reports whether the principal may delete wk now: it is
+// rejected and the principal holds the right that rejects it.
+func mayDeleteWorker(rc *reqCtx, wk *store.Worker) bool {
+	return wk.State == api.WorkerRejected && rc.can(auth.ActDeleteWorker, auth.Resource{WorkerID: wk.ID})
 }
 
 // workerPath is the worker's detail page.
@@ -344,6 +359,46 @@ func (u *UI) handleWorkerState(w http.ResponseWriter, r *http.Request, rc *reqCt
 		return err
 	}
 	return u.workerDone(w, r, rc, id)
+}
+
+// handleDeleteWorker deletes a rejected worker now, as
+// DELETE /admin/workers/{id}, and returns to the workers page.
+func (u *UI) handleDeleteWorker(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
+	id := r.PathValue("id")
+	if !rc.can(auth.ActDeleteWorker, auth.Resource{WorkerID: id}) {
+		return u.deny(r, rc, "worker_admin required")
+	}
+	if err := u.srv.Ops().DeleteWorker(r.Context(), rc.P.Actor(), id); err != nil {
+		return err
+	}
+	u.redirect(w, r, "/ui/workers")
+	return nil
+}
+
+// handleDeleteRejectedWorkers deletes every rejected worker the principal
+// may delete, in one transaction with one worker.delete entry each, as the
+// reaper does. Workers out of the principal's scope are left alone.
+func (u *UI) handleDeleteRejectedWorkers(w http.ResponseWriter, r *http.Request, rc *reqCtx) error {
+	if !holdsRole(rc.P, api.RoleWorkerAdmin) && !holdsRole(rc.P, api.RoleAdmin) {
+		return u.deny(r, rc, "worker_admin required")
+	}
+	ws, err := u.srv.Store().ListWorkers(r.Context())
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for i := range ws {
+		if mayDeleteWorker(rc, &ws[i]) {
+			ids = append(ids, ws[i].ID)
+		}
+	}
+	if len(ids) > 0 {
+		if _, err := u.srv.Ops().DeleteRejectedWorkers(r.Context(), rc.P.Actor(), ids); err != nil {
+			return err
+		}
+	}
+	u.redirect(w, r, "/ui/workers")
+	return nil
 }
 
 // workerDone answers a worker action. An htmx request from a table row
