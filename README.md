@@ -344,7 +344,12 @@ grants nothing. A worker is `pending` until an operator approves it. Approving
 is two decisions: the worker's lifecycle (`worker_admin`) and its access to each
 queue's media (`queue_admin` on every chosen queue). States are `pending`,
 `active`, `paused` (finishes running leases, takes no new ones) and `rejected`
-(token revoked, terminal). There are no enrollment tokens.
+(token revoked, terminal). There are no enrollment tokens. A rejected worker is
+deleted after `--rejected-worker-retention` (30 days), or at once from its page
+(Delete) or the Workers page (Delete all rejected), or with
+`DELETE /admin/workers/{id}`; only rejected workers can be deleted, so reject
+first. A deleted worker's token is then unknown, and the final work counters are
+kept in the `worker.delete` audit entry.
 
 **Circuit breaker.** A worker that keeps failing is paused automatically: after
 `--worker-failure-limit` (default 3) failed or expired leases in a row, spanning
@@ -390,7 +395,7 @@ transcribe tasks go to any level because their input is server-generated WAV.
 |---|---|---|
 | `admin` | `*` | Everything |
 | `queue_admin` | `queue:X` | Approve workers for X; grant `submit`, `view_all`, `delete_all`, `process` on X; list jobs and read their full status; delete any job. Not transcripts |
-| `worker_admin` | `*` or `worker:<id>` | Approve, pause, resume and reject workers |
+| `worker_admin` | `*` or `worker:<id>` | Approve, pause, resume, reject and delete (once rejected) workers |
 | `client_admin` | `*` | Create and revoke API clients |
 | `submit` | `queue:X` | Create jobs; see, read and delete its own |
 | `view_all` | `queue:X` | List every job and read its full status, including prompt, metadata and submitter (not the transcript or result) |
