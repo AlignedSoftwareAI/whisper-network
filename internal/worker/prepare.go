@@ -153,6 +153,5 @@ func outputLimitHit(res childResult, err error) bool {
 	if !errors.As(err, &ee) {
 		return false
 	}
-	return strings.Contains(ee.ProcessState.String(), "file size limit exceeded") ||
-		strings.Contains(res.stderr, "File too large")
+	return killedByFSZ(ee.ProcessState) || strings.Contains(res.stderr, "File too large")
 }
