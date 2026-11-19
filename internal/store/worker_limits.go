@@ -63,8 +63,8 @@ func (t *Tx) RegisterWorkerCapped(ctx context.Context, tokenHash string, facts a
 	return t.registerWorker(ctx, tokenHash, facts, lim.Source)
 }
 
-// PrunedWorker is a worker deleted by DeleteRejectedWorkers, with the
-// counters deleted with it.
+// PrunedWorker is a worker deleted by DeleteRejectedWorkers or
+// DeleteRejectedWorker, with the counters deleted with it.
 type PrunedWorker struct {
 	ID    string
 	Stats api.WorkerStats
@@ -85,26 +85,70 @@ func (s *Store) DeleteRejectedWorkers(ctx context.Context, cutoff time.Time) (in
 // (deleted with them by ON DELETE CASCADE), so the caller can record them.
 func (t *Tx) DeleteRejectedWorkers(ctx context.Context, cutoff time.Time) ([]PrunedWorker, error) {
 	const where = `state = 'rejected' AND COALESCE(decided_at, registered_at) < ?`
-	ms := toMS(cutoff)
-	stats, err := t.statsWhere(ctx, `w.`+where, ms)
+	ws, err := t.deleteRejected(ctx, rejectedDeletion{
+		stats:   `w.` + where,
+		grants:  deleteGrantsOf + where + `) OR scope IN (SELECT 'worker:' || id FROM workers WHERE ` + where + `)`,
+		workers: `DELETE FROM workers WHERE ` + where + ` RETURNING id`,
+	}, toMS(cutoff))
 	if err != nil {
 		return nil, fmt.Errorf("delete rejected workers: %w", err)
 	}
-	if _, err := t.tx.ExecContext(ctx, `DELETE FROM grants
-		WHERE principal IN (SELECT 'worker:' || id FROM workers WHERE `+where+`)
-		   OR scope IN (SELECT 'worker:' || id FROM workers WHERE `+where+`)`, ms, ms); err != nil {
-		return nil, fmt.Errorf("delete rejected workers: %w", err)
-	}
-	rows, err := t.tx.QueryContext(ctx, `DELETE FROM workers WHERE `+where+` RETURNING id`, ms)
+	return ws, nil
+}
+
+// DeleteRejectedWorker deletes one rejected worker on demand, as
+// DeleteRejectedWorkers does past retention: with every grant it holds or
+// that is scoped to it, and its counters. It returns the worker with its
+// final counters, or ErrNotFound if there is no rejected worker with that
+// id (the caller checks the state first to tell the two apart).
+func (t *Tx) DeleteRejectedWorker(ctx context.Context, id string) (*PrunedWorker, error) {
+	const where = `state = 'rejected' AND id = ?`
+	ws, err := t.deleteRejected(ctx, rejectedDeletion{
+		stats:   `w.state = 'rejected' AND w.id = ?`,
+		grants:  deleteGrantsOf + where + `) OR scope IN (SELECT 'worker:' || id FROM workers WHERE ` + where + `)`,
+		workers: `DELETE FROM workers WHERE ` + where + ` RETURNING id`,
+	}, id)
 	if err != nil {
-		return nil, fmt.Errorf("delete rejected workers: %w", err)
+		return nil, fmt.Errorf("delete rejected worker %s: %w", id, err)
+	}
+	if len(ws) == 0 {
+		return nil, fmt.Errorf("rejected worker %s: %w", id, ErrNotFound)
+	}
+	return &ws[0], nil
+}
+
+// deleteGrantsOf starts the statement deleting the grants held by, or
+// scoped to, the workers selected by a condition.
+const deleteGrantsOf = `DELETE FROM grants WHERE principal IN (SELECT 'worker:' || id FROM workers WHERE `
+
+// rejectedDeletion is the SQL deleting a set of rejected workers, each
+// selecting them by the same condition with one "?": their counters (for
+// statsWhere), their grants, then the workers themselves. The statements
+// are built from constants by the callers.
+type rejectedDeletion struct {
+	stats, grants, workers string
+}
+
+// deleteRejected runs q with arg bound to each "?", and returns the
+// deleted workers with the counters deleted with them.
+func (t *Tx) deleteRejected(ctx context.Context, q rejectedDeletion, arg any) ([]PrunedWorker, error) {
+	stats, err := t.statsWhere(ctx, q.stats, arg)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := t.tx.ExecContext(ctx, q.grants, arg, arg); err != nil {
+		return nil, err
+	}
+	rows, err := t.tx.QueryContext(ctx, q.workers, arg)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	var out []PrunedWorker
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("delete rejected workers: %w", err)
+			return nil, err
 		}
 		out = append(out, PrunedWorker{ID: id, Stats: stats[id]})
 	}

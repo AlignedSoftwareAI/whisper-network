@@ -162,6 +162,7 @@ func TestAuditCoverage(t *testing.T) {
 	step("worker.pause", adminName, wname, httpOK("POST", "/admin/workers/"+wk.ID+"/pause", nil, 204, nil))
 	step("worker.resume", adminName, wname, httpOK("POST", "/admin/workers/"+wk.ID+"/resume", nil, 204, nil))
 	step("worker.reject", adminName, wname, httpOK("POST", "/admin/workers/"+wk.ID+"/reject", nil, 204, nil))
+	step("worker.delete", adminName, wname, httpOK("DELETE", "/admin/workers/"+wk.ID, nil, 204, nil))
 	pending, err := ops.RegisterWorker(h.ctx, "hash-2", api.WorkerFacts{Hostname: "old"}, store.PendingLimits{})
 	require.NoError(t, err)
 	h.clk.Advance(48 * time.Hour)

@@ -293,12 +293,8 @@ func (o *Ops) PruneRejectedWorkers(ctx context.Context, cutoff time.Time) (int64
 		if ws, err = tx.DeleteRejectedWorkers(ctx, cutoff); err != nil {
 			return err
 		}
-		for _, w := range ws {
-			detail := map[string]any{"state": api.WorkerRejected}
-			if w.Stats.TasksDone()+w.Stats.Failures+w.Stats.ExpiredLeases > 0 {
-				detail["stats"] = w.Stats
-			}
-			if err := rec("worker.prune", store.WorkerPrincipal(w.ID), detail); err != nil {
+		for i := range ws {
+			if err := rec("worker.prune", store.WorkerPrincipal(ws[i].ID), prunedDetail(&ws[i])); err != nil {
 				return err
 			}
 		}

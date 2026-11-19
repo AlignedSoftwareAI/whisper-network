@@ -82,13 +82,14 @@
 </section>
 {{end}}
 
-{{if or $w.CanPause $w.CanResume $w.CanReject}}
+{{if or $w.CanPause $w.CanResume $w.CanReject $w.CanDelete}}
 <section class="card">
   <h2>State</h2>
   <div class="actions">
     {{if $w.CanPause}}{{template "worker-action" (dict "W" $w "Verb" "pause" "Label" "Pause")}}{{end}}
     {{if $w.CanResume}}{{template "worker-action" (dict "W" $w "Verb" "resume" "Label" "Resume")}}{{end}}
     {{if $w.CanReject}}{{template "worker-action" (dict "W" $w "Verb" "reject" "Label" "Reject")}}{{end}}
+    {{if $w.CanDelete}}{{template "worker-action" (dict "W" $w "Verb" "delete" "Label" "Delete")}}{{end}}
   </div>
 </section>
 {{end}}
@@ -133,13 +134,15 @@
 {{end}}
 
 {{/* worker-action is a state change from the worker page. Without htmx the
-     form posts and the server redirects back here; with htmx the server
-     answers HX-Redirect, and reject asks for confirmation first. */}}
+     form posts and the server redirects back here (delete: to the workers
+     page); with htmx the server answers HX-Redirect, and reject and delete
+     ask for confirmation first. */}}
 {{define "worker-action"}}
 <form method="post" action="/ui/workers/{{.W.ID}}/{{.Verb}}" class="inline"
       hx-post="/ui/workers/{{.W.ID}}/{{.Verb}}"
-      {{if eq .Verb "reject"}}hx-confirm="Reject this worker? Its token is revoked and its leases are cancelled. This cannot be undone."{{end}}>
+      {{if eq .Verb "reject"}}hx-confirm="Reject this worker? Its token is revoked and its leases are cancelled. This cannot be undone."
+      {{- else if eq .Verb "delete"}}hx-confirm="Delete this worker now? Its record, grants and work counters are removed (the audit log keeps its final counters). This cannot be undone."{{end}}>
   {{template "csrf" .W.CSRF}}
-  <button type="submit"{{if eq .Verb "reject"}} class="danger"{{end}}>{{.Label}}</button>
+  <button type="submit"{{if or (eq .Verb "reject") (eq .Verb "delete")}} class="danger"{{end}}>{{.Label}}</button>
 </form>
 {{end}}

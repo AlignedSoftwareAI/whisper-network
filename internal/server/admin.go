@@ -12,6 +12,7 @@ package server
 //	POST   /admin/workers/{id}/pause       → 204                                 worker_admin
 //	POST   /admin/workers/{id}/resume      → 204                                 worker_admin
 //	POST   /admin/workers/{id}/reject      → 204 (cancels its leases)            worker_admin
+//	DELETE /admin/workers/{id}             → 204; 409 unless rejected            worker_admin
 //	GET    /admin/queues                   list queues                           any user or client
 //	POST   /admin/queues                   api.Queue → 201                       admin
 //	GET    /admin/users                    list users                            admin
@@ -126,6 +127,21 @@ func (s *Server) handleAdminWorkerState(w http.ResponseWriter, r *http.Request, 
 		return s.deny(r, p, "worker_admin required")
 	}
 	if err := s.ops.SetWorkerState(r.Context(), p.Actor(), id, state); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// handleAdminDeleteWorker deletes a rejected worker now rather than after
+// --rejected-worker-retention (Ops.DeleteWorker). It needs the right that
+// rejects the worker; any state but rejected is 409.
+func (s *Server) handleAdminDeleteWorker(w http.ResponseWriter, r *http.Request, p *Principal) error {
+	id := r.PathValue("id")
+	if !auth.Can(p.Principal, auth.ActDeleteWorker, auth.Resource{WorkerID: id}) {
+		return s.deny(r, p, "worker_admin required")
+	}
+	if err := s.ops.DeleteWorker(r.Context(), p.Actor(), id); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)

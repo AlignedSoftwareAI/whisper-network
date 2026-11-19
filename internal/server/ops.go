@@ -453,6 +453,78 @@ func (o *Ops) SetWorkerState(ctx context.Context, a Actor, workerID string, stat
 	return nil
 }
 
+// DeleteWorker deletes a rejected worker on demand, as the reaper does past
+// --rejected-worker-retention: with its grants, the grants scoped to it and
+// its counters, audited as worker.delete. Any other state is a conflict, so
+// an active or paused worker must be rejected first (cancelling its leases)
+// and live leases are never stranded. Afterwards the worker's token is
+// unknown (401) rather than rejected (410).
+func (o *Ops) DeleteWorker(ctx context.Context, a Actor, workerID string) error {
+	return o.change(ctx, a, func(tx *store.Tx, rec recorder) error {
+		w, err := tx.WorkerByID(ctx, workerID)
+		if err != nil {
+			return err
+		}
+		if w.State != api.WorkerRejected {
+			return conflict("only a rejected worker can be deleted; this one is " + string(w.State))
+		}
+		return deleteRejectedWorker(ctx, tx, rec, w.ID)
+	})
+}
+
+// DeleteRejectedWorkers deletes each of the given workers that is still
+// rejected, in one transaction, each audited as worker.delete; ids that are
+// unknown (already deleted) or not rejected are skipped. The caller has
+// authorized every id. It returns the ids deleted.
+func (o *Ops) DeleteRejectedWorkers(ctx context.Context, a Actor, workerIDs []string) ([]string, error) {
+	var deleted []string
+	err := o.change(ctx, a, func(tx *store.Tx, rec recorder) error {
+		deleted = deleted[:0]
+		for _, id := range workerIDs {
+			w, err := tx.WorkerByID(ctx, id)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if w.State != api.WorkerRejected {
+				continue
+			}
+			if err := deleteRejectedWorker(ctx, tx, rec, w.ID); err != nil {
+				return err
+			}
+			deleted = append(deleted, w.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
+// deleteRejectedWorker deletes one rejected worker and records worker.delete.
+// Like worker.prune, the entry keeps the final counters of a worker that did
+// any work, since they are gone afterwards.
+func deleteRejectedWorker(ctx context.Context, tx *store.Tx, rec recorder, id string) error {
+	pw, err := tx.DeleteRejectedWorker(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rec("worker.delete", store.WorkerPrincipal(pw.ID), prunedDetail(pw))
+}
+
+// prunedDetail is the audit detail of a deleted rejected worker: its state,
+// and its final counters if it did any work.
+func prunedDetail(pw *store.PrunedWorker) map[string]any {
+	detail := map[string]any{"state": api.WorkerRejected}
+	if pw.Stats.TasksDone()+pw.Stats.Failures+pw.Stats.ExpiredLeases > 0 {
+		detail["stats"] = pw.Stats
+	}
+	return detail
+}
+
 // --- clients ---
 
 // CreateClient creates an API client with the given grants and returns it

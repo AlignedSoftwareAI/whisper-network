@@ -10,6 +10,14 @@
     </label>
     <button type="submit">Filter</button>
   </form>
+  {{with .Data.DeletableRejected}}
+  <form method="post" action="/ui/workers/delete-rejected" class="inline"
+        hx-post="/ui/workers/delete-rejected"
+        hx-confirm="Delete {{.}} rejected worker{{if ne . 1}}s{{end}} now? Their records, grants and work counters are removed (the audit log keeps their final counters). This cannot be undone.">
+    {{template "csrf" $.CSRF}}
+    <button type="submit" class="danger" title="Delete the rejected workers you may manage now, instead of after the retention period">Delete all rejected ({{.}})</button>
+  </form>
+  {{end}}
   <div class="scroll">
   <table class="data workers">
     <thead><tr>

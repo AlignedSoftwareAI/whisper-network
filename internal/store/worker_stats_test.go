@@ -159,6 +159,54 @@ func TestPruneRejectedWorkerReturnsAndDeletesStats(t *testing.T) {
 	assert.Zero(t, rows, "counters go with the worker")
 }
 
+// TestDeleteRejectedWorker: deleting one rejected worker on demand takes
+// its grants, the grants scoped to it and its counters, and only it; a
+// worker in any other state, or an unknown one, is not found.
+func TestDeleteRejectedWorker(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	w := f.worker(api.SandboxFull, f.pubID)
+	other := f.worker(api.SandboxFull, f.pubID)
+	active := f.worker(api.SandboxFull, f.pubID)
+	f.job(f.pubID, "c", api.WeightMedium, 1, 10)
+	f.complete(f.claim(w))
+	require.NoError(t, f.s.AddGrant(f.ctx, "user:1", api.RoleWorkerAdmin, WorkerPrincipal(w), "user:1"))
+	for _, id := range []string{w, other} {
+		_, err := f.s.SetWorkerState(f.ctx, id, api.WorkerRejected, "user:1")
+		require.NoError(t, err)
+	}
+	want := f.stats(w)
+	require.EqualValues(t, 1, want.TranscribeTasks)
+
+	var got *PrunedWorker
+	require.NoError(t, f.s.InTx(f.ctx, func(tx *Tx) error {
+		var err error
+		got, err = tx.DeleteRejectedWorker(f.ctx, w)
+		return err
+	}))
+	assert.Equal(t, &PrunedWorker{ID: w, Stats: want}, got)
+	_, err := f.s.WorkerByID(f.ctx, w)
+	require.ErrorIs(t, err, ErrNotFound)
+	var n int
+	require.NoError(t, f.s.r.QueryRowContext(f.ctx, `SELECT COUNT(*) FROM grants WHERE principal = ? OR scope = ?`,
+		WorkerPrincipal(w), WorkerPrincipal(w)).Scan(&n))
+	assert.Zero(t, n, "its grants and the grants over it go with it")
+	require.NoError(t, f.s.r.QueryRowContext(f.ctx, `SELECT COUNT(*) FROM worker_stats WHERE worker_id = ?`, w).Scan(&n))
+	assert.Zero(t, n, "counters go with the worker")
+	_, err = f.s.WorkerByID(f.ctx, other)
+	require.NoError(t, err, "another rejected worker stays")
+
+	for _, id := range []string{active, "no-such-worker"} {
+		err := f.s.InTx(f.ctx, func(tx *Tx) error {
+			_, err := tx.DeleteRejectedWorker(f.ctx, id)
+			return err
+		})
+		require.ErrorIs(t, err, ErrNotFound, id)
+	}
+	_, err = f.s.WorkerByID(f.ctx, active)
+	require.NoError(t, err, "a worker that is not rejected stays")
+}
+
 // rollBackToV2 makes the database look as it did at schema version 2
 // (undoing every later migration: 0003 worker_stats, 0004's index, 0006's
 // heartbeat_at column, 0007's failure streak table and pause_reason

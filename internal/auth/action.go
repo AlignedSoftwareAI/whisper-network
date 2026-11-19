@@ -44,6 +44,9 @@ const (
 	ActResumeWorker
 	// ActRejectWorker rejects Resource.WorkerID.
 	ActRejectWorker
+	// ActDeleteWorker deletes Resource.WorkerID once it is rejected (the
+	// caller checks the state): the same right as rejecting it.
+	ActDeleteWorker
 	// ActViewWorker reads a worker's state: the worker itself or a worker admin.
 	ActViewWorker
 	// ActUpdateWorker updates a worker's facts. The worker itself only.
